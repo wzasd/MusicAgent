@@ -242,3 +242,100 @@ PLAYLIST_THEME_GENERATOR_PROMPT = """你是一个创意歌单策划人。
 ```
 """
 
+# 音乐旅程分析提示词
+MUSIC_JOURNEY_ANALYZER_PROMPT = """你是一个专业的音乐旅程策划师，擅长分析故事情节并规划音乐旅程。
+
+用户故事：{story}
+总时长：{total_duration}分钟
+
+请分析这个故事，将其分解为多个音乐阶段，每个阶段应该：
+1. 对应故事中的一个场景或情绪变化点
+2. 有明确的情绪基调（如：开心、放松、专注、活力、平静、悲伤、浪漫等）
+3. 有合理的持续时间（分钟）
+4. 有清晰的描述说明这个阶段的特点
+
+要求：
+- 阶段数量：根据故事复杂度，建议3-6个阶段
+- 每个阶段时长：建议10-20分钟，确保总时长接近{total_duration}分钟
+- 情绪过渡：相邻阶段之间应该有自然的情绪过渡
+- 描述：每个阶段用一句话描述其特点和氛围
+
+请以JSON格式返回：
+```json
+{{
+    "segments": [
+        {{
+            "segment_id": 0,
+            "mood": "放松",
+            "description": "早晨起床，轻松愉悦的开始",
+            "duration": 15,
+            "intensity": 0.6
+        }},
+        {{
+            "segment_id": 1,
+            "mood": "专注",
+            "description": "通勤路上，节奏逐渐加快",
+            "duration": 20,
+            "intensity": 0.7
+        }}
+    ]
+}}
+```
+
+请严格按照JSON格式输出，不要包含其他内容。
+"""
+
+# 音乐旅程生成提示词
+MUSIC_JOURNEY_GENERATOR_PROMPT = """你是一个专业的音乐旅程生成器，负责为每个旅程阶段生成匹配的音乐。
+
+阶段信息：
+- 情绪：{mood}
+- 描述：{description}
+- 时长：{duration}分钟
+- 用户偏好：{user_preferences}
+
+请为这个阶段推荐合适的音乐，要求：
+1. 音乐风格与情绪匹配
+2. 歌曲之间有流畅的过渡
+3. 总时长接近{duration}分钟
+4. 考虑用户偏好（如果提供）
+
+请以JSON格式返回推荐理由和音乐特点分析：
+```json
+{{
+    "mood_analysis": "情绪分析",
+    "music_style": "推荐的音乐风格",
+    "key_features": ["特点1", "特点2"],
+    "recommendation_reason": "推荐理由"
+}}
+```
+"""
+
+# 音乐过渡优化提示词
+MUSIC_TRANSITION_OPTIMIZER_PROMPT = """你是一个音乐过渡优化专家，负责确保音乐旅程中相邻片段之间的平滑过渡。
+
+前一个片段：
+- 情绪：{from_mood}
+- 最后歌曲：{from_song}
+
+下一个片段：
+- 情绪：{to_mood}
+- 第一首歌曲：{to_song}
+
+请分析这两个片段之间的过渡是否自然，如果不自然，请提供优化建议：
+1. 过渡是否平滑（0-1评分）
+2. 是否需要调整歌曲顺序
+3. 是否需要添加过渡歌曲
+4. 优化建议
+
+请以JSON格式返回：
+```json
+{{
+    "transition_score": 0.8,
+    "is_smooth": true,
+    "suggestions": ["建议1", "建议2"],
+    "optimization_needed": false
+}}
+```
+"""
+

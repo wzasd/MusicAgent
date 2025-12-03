@@ -163,17 +163,18 @@ class MusicSearchTool:
         try:
             api_key = self.tailyapi_config.get("api_key", "")
             base_url = self.tailyapi_config.get("base_url", "https://api.tavily.com")
-            
+
             if not api_key:
                 logger.warning("TailyAPI API Key 未配置，跳过在线搜索")
                 return []
-            
+
             # 构建搜索查询，添加音乐相关关键词
             search_query = f"{query} 歌曲 音乐 song music"
-            
+
             session = await self._get_session()
             url = f"{base_url}/search"
-            
+
+            # Tavily (TailyAPI) 需要在 body 中携带 api_key，这里同时保留 header 以兼容不同部署
             payload = {
                 "api_key": api_key,
                 "query": search_query,
@@ -182,11 +183,12 @@ class MusicSearchTool:
                 "include_raw_content": False,
                 "max_results": limit * 2,  # 获取更多结果以便筛选
                 "include_domains": [],
-                "exclude_domains": []
+                "exclude_domains": [],
             }
-            
+
             headers = {
-                "Content-Type": "application/json"
+                "Content-Type": "application/json",
+                "x-api-key": api_key,
             }
             
             logger.info(f"使用 TailyAPI 搜索歌曲: query='{query}'")
@@ -304,7 +306,7 @@ class MusicSearchTool:
         limit: int = 10
     ) -> List[Song]:
         """
-        搜索歌曲（使用 Spotify API via MCP）
+        搜索歌曲，优先使用 Spotify (MCP)，失败或无结果时自动回退到 TailyAPI 和本地数据库。
         
         Args:
             query: 搜索关键词（歌曲名或艺术家）
@@ -314,24 +316,56 @@ class MusicSearchTool:
         Returns:
             歌曲列表
         """
+        logger.info(f"搜索音乐: query='{query}', genre='{genre}', limit={limit}")
+
+        # 1) 优先尝试 Spotify via MCP
         try:
-            logger.info(f"搜索音乐: query='{query}', genre='{genre}', limit={limit}")
-            
-            # 使用 Spotify API 搜索（通过 MCP）
-            spotify_results = await self.mcp_adapter.search_tracks(query, limit=limit * 2)
-            
-            if spotify_results:
-                # 如果指定了流派，进行过滤（注意：Spotify 不直接提供流派，这里先不过滤，返回所有结果）
-                # 未来可以通过艺术家信息获取流派
-                logger.info(f"从 Spotify 找到 {len(spotify_results)} 首歌曲")
-                return spotify_results[:limit]
+            if self.mcp_adapter is not None:
+                spotify_results = await self.mcp_adapter.search_tracks(query, limit=limit * 2)
             else:
-                logger.warning(f"Spotify 搜索未返回结果，请检查 MCP 配置")
-                return []
-            
+                spotify_results = []
         except Exception as e:
-            logger.error(f"搜索歌曲失败: {str(e)}", exc_info=True)
-            raise  # 抛出异常，不使用本地数据库
+            logger.warning(f"Spotify/MCP 搜索失败，将回退到 TailyAPI: {e}")
+            spotify_results = []
+
+        if spotify_results:
+            logger.info(f"从 Spotify 找到 {len(spotify_results)} 首歌曲")
+            return spotify_results[:limit]
+
+        # 2) Spotify 无结果或不可用 → 尝试 TailyAPI 在线搜索
+        logger.info("Spotify 搜索无结果，尝试使用 TailyAPI 在线搜索歌曲")
+        taily_results: List[Song] = []
+        try:
+            taily_results = await self._search_songs_with_tailyapi(query=query, limit=limit)
+        except Exception as e:
+            logger.error(f"调用 TailyAPI 搜索歌曲失败: {e}", exc_info=True)
+
+        if taily_results:
+            logger.info(f"从 TailyAPI 找到 {len(taily_results)} 首歌曲")
+            return taily_results[:limit]
+
+        # 3) 仍然没有结果 → 使用本地 JSON 音乐库做一个简单匹配
+        logger.info("Spotify 和 TailyAPI 均无结果，尝试从本地音乐数据库模糊匹配")
+        try:
+            q = query.lower()
+            local_matches = [
+                song
+                for song in self.music_db
+                if q in song.title.lower() or q in song.artist.lower()
+            ]
+            if genre:
+                local_matches = [
+                    s for s in local_matches
+                    if s.genre and genre.lower() in s.genre.lower()
+                ]
+            if local_matches:
+                logger.info(f"从本地数据库找到 {len(local_matches)} 首匹配歌曲")
+                return local_matches[:limit]
+        except Exception as e:
+            logger.error(f"从本地数据库搜索失败: {e}", exc_info=True)
+
+        logger.warning("未找到任何匹配的歌曲")
+        return []
     
     async def get_songs_by_genre(self, genre: str, limit: int = 10) -> List[Song]:
         """
