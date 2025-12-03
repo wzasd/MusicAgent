@@ -10,31 +10,31 @@ interface SendButtonProps {
 export default function SendButton({ onClick, disabled }: SendButtonProps) {
   return (
     <button
+      type="button"
       onClick={onClick}
       disabled={disabled}
       style={{
-        width: '48px',
-        height: '48px',
+        width: '44px',
+        height: '44px',
         borderRadius: theme.borderRadius.full,
-        backgroundColor: disabled ? theme.colors.primary[300] : theme.colors.primary[500],
+        backgroundColor: disabled ? theme.colors.primary[200] : theme.colors.text.primary,
         border: 'none',
         cursor: disabled ? 'not-allowed' : 'pointer',
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
-        transition: 'all 0.2s',
+        transition: 'transform 0.2s ease, background-color 0.2s ease',
         flexShrink: 0,
+        color: '#fff',
       }}
       onMouseEnter={(e) => {
         if (!disabled) {
-          e.currentTarget.style.backgroundColor = theme.colors.primary[600];
-          e.currentTarget.style.transform = 'scale(1.05)';
+          e.currentTarget.style.transform = 'translateY(-1px)';
         }
       }}
       onMouseLeave={(e) => {
         if (!disabled) {
-          e.currentTarget.style.backgroundColor = theme.colors.primary[500];
-          e.currentTarget.style.transform = 'scale(1)';
+          e.currentTarget.style.transform = 'translateY(0)';
         }
       }}
     >
@@ -43,13 +43,13 @@ export default function SendButton({ onClick, disabled }: SendButtonProps) {
         height="22"
         viewBox="0 0 24 24"
         fill="none"
-        stroke="white"
+        stroke="currentColor"
         strokeWidth="2"
         strokeLinecap="round"
         strokeLinejoin="round"
       >
-        <line x1="22" y1="2" x2="11" y2="13"></line>
-        <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+        <line x1="22" y1="2" x2="11" y2="13" />
+        <polygon points="22 2 15 22 11 13 2 9 22 2" />
       </svg>
     </button>
   );

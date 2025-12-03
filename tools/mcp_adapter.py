@@ -19,6 +19,13 @@ except Exception as e:
 from config.logging_config import get_logger
 from tools.music_tools import Song
 
+try:
+    from llms.siliconflow_llm import SiliconFlowLLM  # type: ignore
+    _silicon_import_error = ""
+except Exception as _silicon_err:  # noqa: BLE001
+    SiliconFlowLLM = None  # type: ignore[assignment]
+    _silicon_import_error = str(_silicon_err)
+
 logger = get_logger(__name__)
 
 
@@ -297,9 +304,14 @@ class MCPClientAdapter:
                 return []
             
             # 使用硅基流动API生成推荐
+            if SiliconFlowLLM is None:
+                logger.warning(
+                    "硅基流动LLM 未就绪，跳过AI推荐。原因: %s",
+                    _silicon_import_error or "未知",
+                )
+                return []
             logger.info("使用硅基流动API生成推荐...")
             try:
-                from llms.siliconflow_llm import SiliconFlowLLM
                 llm = SiliconFlowLLM()
                 
                 # 构建提示词

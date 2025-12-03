@@ -10,7 +10,7 @@ import json
 import os
 import sys
 from pathlib import Path
-from typing import AsyncGenerator, Dict, Any, Optional
+from typing import AsyncGenerator, Dict, Any, Optional, List
 
 # 添加项目根目录到Python路径（如果还没有）
 project_root = Path(__file__).parent.parent
@@ -32,6 +32,8 @@ except Exception as e:
 from config.logging_config import get_logger
 from music_agent import MusicRecommendationAgent
 from services import PlaylistRecommendationService
+from services.journey_service import MusicJourneyService, MoodPoint
+from tools.music_tools import get_music_search_tool
 
 logger = get_logger(__name__)
 
@@ -49,6 +51,7 @@ app.add_middleware(
 # 全局Agent实例
 _agent: Optional[MusicRecommendationAgent] = None
 _playlist_service: Optional[PlaylistRecommendationService] = None
+_journey_service: Optional[MusicJourneyService] = None
 
 
 def get_agent() -> MusicRecommendationAgent:
@@ -67,6 +70,14 @@ def get_playlist_service() -> PlaylistRecommendationService:
     return _playlist_service
 
 
+def get_journey_service() -> MusicJourneyService:
+    """获取旅程服务实例（单例模式）"""
+    global _journey_service
+    if _journey_service is None:
+        _journey_service = MusicJourneyService()
+    return _journey_service
+
+
 # 请求模型
 class RecommendationRequest(BaseModel):
     query: str
@@ -81,6 +92,21 @@ class PlaylistRequest(BaseModel):
     create_spotify_playlist: bool = False
     public: bool = False
     user_preferences: Optional[Dict[str, Any]] = None
+
+
+class JourneyRequest(BaseModel):
+    story: Optional[str] = None
+    mood_transitions: Optional[List[Dict[str, Any]]] = None  # [{time, mood, intensity}]
+    duration: int = 60  # 总时长（分钟）
+    user_preferences: Optional[Dict[str, Any]] = None
+    context: Optional[Dict[str, Any]] = None  # 天气、地点、时间等
+
+
+class SearchRequest(BaseModel):
+    """歌曲搜索请求"""
+    query: str
+    genre: Optional[str] = None
+    limit: int = 20
 
 
 async def stream_recommendations(
@@ -216,6 +242,94 @@ async def stream_playlist(
         yield f"data: {json.dumps({'type': 'error', 'message': str(e)}, ensure_ascii=False)}\n\n"
 
 
+async def stream_journey(
+    story: Optional[str] = None,
+    mood_transitions: Optional[List[Dict[str, Any]]] = None,
+    duration: int = 60,
+    user_preferences: Optional[Dict[str, Any]] = None,
+    context: Optional[Dict[str, Any]] = None
+) -> AsyncGenerator[str, None]:
+    """
+    流式生成音乐旅程
+    
+    Yields:
+        SSE格式的数据块
+    """
+    try:
+        service = get_journey_service()
+        
+        # 发送开始事件
+        yield f"data: {json.dumps({'type': 'journey_start', 'message': '开始生成你的音乐旅程...'}, ensure_ascii=False)}\n\n"
+        await asyncio.sleep(0.1)
+        
+        # 转换情绪点
+        mood_points = None
+        if mood_transitions:
+            mood_points = [
+                MoodPoint(
+                    time=float(mt.get("time", 0)),
+                    mood=mt.get("mood", "中性"),
+                    intensity=float(mt.get("intensity", 0.5))
+                )
+                for mt in mood_transitions
+            ]
+        
+        # 分析故事或情绪曲线
+        if story:
+            yield f"data: {json.dumps({'type': 'thinking', 'message': '正在分析你的故事...'}, ensure_ascii=False)}\n\n"
+        elif mood_transitions:
+            yield f"data: {json.dumps({'type': 'thinking', 'message': '正在分析情绪曲线...'}, ensure_ascii=False)}\n\n"
+        await asyncio.sleep(0.2)
+        
+        # 生成旅程（这里可以进一步拆分步骤）
+        result = await service.generate_journey(
+            story=story,
+            mood_transitions=mood_points,
+            duration=duration,
+            user_preferences=user_preferences,
+            context=context
+        )
+        
+        if not result.get("success"):
+            yield f"data: {json.dumps({'type': 'error', 'message': result.get('error', '生成旅程失败')}, ensure_ascii=False)}\n\n"
+            return
+        
+        segments = result.get("segments", [])
+        total_segments = len(segments)
+        
+        # 发送旅程信息
+        yield f"data: {json.dumps({'type': 'journey_info', 'total_segments': total_segments, 'total_duration': result.get('total_duration', 0), 'total_songs': result.get('total_songs', 0)}, ensure_ascii=False)}\n\n"
+        
+        # 逐个发送片段
+        for i, segment in enumerate(segments):
+            # 发送过渡点事件
+            if i > 0:
+                prev_segment = segments[i - 1]
+                yield f"data: {json.dumps({'type': 'transition_point', 'from_segment': i-1, 'to_segment': i, 'from_mood': prev_segment.get('mood', ''), 'to_mood': segment.get('mood', '')}, ensure_ascii=False)}\n\n"
+                await asyncio.sleep(0.1)
+            
+            # 发送片段开始
+            yield f"data: {json.dumps({'type': 'segment_start', 'segment_id': i, 'segment': segment}, ensure_ascii=False)}\n\n"
+            await asyncio.sleep(0.1)
+            
+            # 发送片段中的歌曲
+            songs = segment.get("songs", [])
+            for j, song in enumerate(songs):
+                yield f"data: {json.dumps({'type': 'song', 'song': song, 'segment_id': i, 'index': j, 'total': len(songs)}, ensure_ascii=False)}\n\n"
+                await asyncio.sleep(0.05)
+            
+            # 发送片段完成
+            yield f"data: {json.dumps({'type': 'segment_complete', 'segment_id': i, 'segment': segment}, ensure_ascii=False)}\n\n"
+            await asyncio.sleep(0.1)
+        
+        # 发送完成事件
+        yield f"data: {json.dumps({'type': 'journey_complete', 'success': True, 'result': result}, ensure_ascii=False)}\n\n"
+        
+    except Exception as e:
+        logger.error(f"流式旅程生成失败: {str(e)}", exc_info=True)
+        yield f"data: {json.dumps({'type': 'error', 'message': str(e)}, ensure_ascii=False)}\n\n"
+
+
 @app.get("/")
 async def root():
     """健康检查"""
@@ -305,6 +419,86 @@ async def generate_playlist(request: PlaylistRequest):
         return {"success": True, **result}
     except Exception as e:
         logger.error(f"生成歌单失败: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/journey/stream")
+async def stream_journey_endpoint(request: JourneyRequest):
+    """
+    流式生成音乐旅程（SSE）
+    """
+    return StreamingResponse(
+        stream_journey(
+            story=request.story,
+            mood_transitions=request.mood_transitions,
+            duration=request.duration,
+            user_preferences=request.user_preferences,
+            context=request.context
+        ),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"
+        }
+    )
+
+
+@app.post("/api/journey")
+async def generate_journey(request: JourneyRequest):
+    """
+    生成音乐旅程（非流式，兼容旧接口）
+    """
+    try:
+        service = get_journey_service()
+        
+        # 转换情绪点
+        mood_points = None
+        if request.mood_transitions:
+            mood_points = [
+                MoodPoint(
+                    time=float(mt.get("time", 0)),
+                    mood=mt.get("mood", "中性"),
+                    intensity=float(mt.get("intensity", 0.5))
+                )
+                for mt in request.mood_transitions
+            ]
+        
+        result = await service.generate_journey(
+            story=request.story,
+            mood_transitions=mood_points,
+            duration=request.duration,
+            user_preferences=request.user_preferences,
+            context=request.context
+        )
+        return result
+    except Exception as e:
+        logger.error(f"生成旅程失败: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/search")
+async def search_music(request: SearchRequest):
+    """
+    使用统一的搜索工具搜索歌曲。
+    - 优先 Spotify/MCP
+    - 失败或无结果时自动回退到 TailyAPI
+    - 仍无结果时使用本地 JSON 数据库模糊匹配
+    """
+    try:
+        search_tool = get_music_search_tool()
+        songs = await search_tool.search_songs(
+            query=request.query,
+            genre=request.genre,
+            limit=request.limit,
+        )
+        return {
+            "success": True,
+            "count": len(songs),
+            "songs": [s.to_dict() for s in songs],
+        }
+    except Exception as e:
+        logger.error(f"搜索歌曲失败: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 

@@ -39,8 +39,31 @@ def load_settings_from_json(json_path: Optional[str] = None) -> Dict[str, Any]:
         raise FileNotFoundError(f"配置文件不存在: {json_path}")
     
     with open(json_path, 'r', encoding='utf-8') as f:
-        settings = json.load(f)
-    
+        raw = json.load(f)
+
+    # 兼容当前项目的层级结构：
+    # {
+    #   "settings": { ... 平铺配置 ... },
+    #   "WAN_API_SETTINGS": { ... 可选 ... }
+    # }
+    if isinstance(raw, dict):
+        settings = {}
+        # 先合并顶层 settings 字段
+        if isinstance(raw.get("settings"), dict):
+            settings.update(raw["settings"])
+        # 其余顶层简单 key 也合并进来（防止以后扩展）
+        for k, v in raw.items():
+            if k == "settings":
+                continue
+            # 只保留简单标量配置，避免把嵌套对象错误映射为 env
+            if not isinstance(v, dict):
+                settings[k] = v
+        # 同时把 WAN_API_SETTINGS 暴露出去，便于其他模块使用
+        if isinstance(raw.get("WAN_API_SETTINGS"), dict):
+            settings["WAN_API_SETTINGS"] = raw["WAN_API_SETTINGS"]
+    else:
+        settings = raw
+
     return settings
 
 
@@ -72,6 +95,14 @@ def setup_environment_from_settings(settings: Optional[Dict[str, Any]] = None) -
         if json_key in settings and settings[json_key]:
             # 强制设置环境变量（覆盖已存在的值）
             os.environ[env_key] = str(settings[json_key])
+
+    # 额外处理 WAN_API_SETTINGS，方便 Python 端也能直接使用 WAN 配置
+    wan_settings = settings.get("WAN_API_SETTINGS")
+    if isinstance(wan_settings, dict):
+        if wan_settings.get("WAN_API_URL"):
+            os.environ["WAN_API_URL"] = str(wan_settings["WAN_API_URL"])
+        if wan_settings.get("WAN_API_KEY"):
+            os.environ["WAN_API_KEY"] = str(wan_settings["WAN_API_KEY"])
 
 
 def load_and_setup_settings(json_path: Optional[str] = None) -> Dict[str, Any]:

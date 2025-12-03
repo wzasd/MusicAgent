@@ -2,35 +2,63 @@
   <img src="assets/logo.png" alt="Music Recommendation Agent logo" width="140">
 </p>
 
-<h1 align="center">音乐推荐 Agent</h1>
+<h1 align="center">音乐推荐 Agent · Music Recommendation Agent</h1>
 
 <p align="center">
-  用自然语言和 AI 获取个性化音乐推荐。
+  一句自然语言，串起心情、场景与故事的整条音乐旅程。
+</p>
+
+<p align="center">
+  <a href="http://localhost:3000/recommendations"><strong>立即体验流式推荐</strong></a>
+  ·
+  <a href="#quick-start">快速开始</a>
+  ·
+  <a href="#-%E6%9E%B6%E6%9E%84%E4%B8%80%E8%A7%88">架构一览</a>
 </p>
 
 ---
 
 ## Highlights
 
-- 🎯 智能理解心情、场景、流派等需求，一键生成推荐歌单
-- 🔍 集成搜索、推荐与解释，让你知道每首歌的推荐理由
-- ⚡ **SSE流式输出**：实时流式渲染推荐结果，提供更好的用户体验
-- 🌐 **前后端分离**：FastAPI后端 + Next.js前端，现代化架构
-- ⚙️ 基于 LangGraph + Streamlit，轻量部署即可运行
-- 🔐 支持自定义 LLM（DeepSeek、Qwen 等）与本地音乐数据
+- 🎯 **自然语言驱动的音乐推荐**：智能理解心情、场景、流派等需求，一句话生成推荐歌单
+- 🔍 **可解释推荐**：集成搜索 + 推荐 + 说明，让你真正知道每首歌“为什么被选中”
+- ⚡ **实时流式体验**：SSE 流式渲染推荐结果，回应内容逐词出现、歌曲逐首上屏
+- 🌐 **现代化前后端架构**：FastAPI 后端 + Next.js 前端，便于二次开发与集成
+- ⚙️ **LangGraph 工作流编排**：将意图识别、搜索、推荐解释拆分为清晰节点，便于扩展
+- 🔐 **灵活接入 LLM 与数据源**：支持自定义 LLM（DeepSeek、Qwen 等）与本地音乐数据
+- 🎼 **音乐旅程生成器**：按故事或情绪曲线自动划分段落，并为每一段流式生成契合的配套音乐
 
 ## 项目概览
 
-音乐推荐 Agent 是一个面向内容创作者与音乐爱好者的 AI 助手。通过自然语言对话即可完成：
+音乐推荐 Agent 是一个面向内容创作者与音乐爱好者的 AI 助手，你可以像和朋友聊天一样，用自然语言描述你“想听什么”，其余交给系统完成：
 
-- 心情或场景驱动的歌单生成
-- 特定歌手、流派的音乐探索
-- 推荐背后逻辑的透明解释
-- **实时流式输出**：推荐结果逐词显示，歌曲逐个添加
-- **RESTful API**：提供完整的API接口，支持前后端分离
-- 面向下一步集成的 API 化扩展接口
+- **心情 / 场景驱动的歌单生成**：例如「适合深夜加班写代码的节奏」或「和朋友自驾去海边」
+- **基于歌手 / 流派的探索**：例如「按照周杰伦的风格，再找一些同样浪漫的中文 R&B」
+- **推荐背后逻辑的透明解释**：不仅给出歌单，还用自然语言说明为什么推荐这些歌
+- **音乐旅程编排**：根据故事 / 情绪曲线划分段落，为每一段挑选节奏与氛围都契合的配套音乐
+- **流式交互体验**：推荐结果逐词显示、歌曲逐个添加，随时可以打断或调整输入
+- **RESTful API**：提供完整的 API 接口，支持前后端分离与系统集成
+- **面向扩展的 API 化设计**：便于后续接入更多音乐平台或个性化画像
 
-项目默认使用硅基流动提供的 DeepSeek / Qwen 模型，也可接入其他 OpenAI 风格的 LLM 服务。
+项目默认使用硅基流动提供的 DeepSeek / Qwen 模型，也可接入其他兼容 OpenAI 接口风格的 LLM 服务。
+
+### 主页面预览
+
+<p align="center">
+  <img src="assets/首页.png" alt="应用首页界面" width="780">
+  <br />
+  <sub>前端主页面：左侧导航 + 右侧推荐输入与结果区</sub>
+</p>
+
+### 音乐旅程编排（Music Journey）
+
+在传统歌单之外，本项目特别提供「音乐旅程生成器」，适合播客创作者、展览策划、沉浸式空间与长时间专注场景使用：
+
+- 你可以输入一段**故事**（例如“一天的情绪变化”）或一组**情绪时间点**（mood timeline）
+- 系统会分析故事结构或情绪曲线，将整个时长划分为若干个**音乐阶段（Segments）**
+- 每个阶段都会给出清晰的情绪标签、文字描述，并推荐一组节奏与氛围匹配的歌曲
+- 通过 SSE 流式接口，**旅程结构、片段信息与每首歌会被逐步推送到前端**，便于实时可视化与交互
+- 对于有二次开发需求的用户，也可以直接调用 `/api/journey` 与 `/api/journey/stream` 接口，将音乐旅程编排能力嵌入自己的产品中
 
 ### 架构特点
 
@@ -45,19 +73,21 @@
 ### Web 界面
 
 1. 打开浏览器访问 `http://localhost:8501`
-2. 在“智能推荐”页输入需求（心情、场景、歌手等）
+2. 在「音乐推荐」页输入需求（心情、场景、歌手等），通过 LangGraph 工作流 + LLM 生成带解释的音乐推荐
 <p align="center">
-  <img src="assets/首页.png" alt="应用首页界面" width="800">
+  <img src="assets/音乐推荐.png" alt="音乐推荐页：自然语言输入与流式推荐结果" width="800">
 </p>
-3. 在“音乐搜索”页按关键字过滤本地音乐库
+3. 在「音乐搜索」页，通过在线乐库 + 网络搜索进行歌曲网络推荐 / 搜索，支持“歌手 + 流派”等自然语言请求
 <p align="center">
-  <img src="assets/搜素音乐.png" alt="搜索音乐界面" width="800">
+  <img src="assets/歌曲搜索.png" alt="音乐搜索页：关键词与流派驱动的歌曲网络推荐" width="800">
 </p>
-4. 查看侧边栏快捷按钮，快速测试预设场景
+4. 在「歌单创作」与「音乐旅程」视图中，查看推荐说明、歌单结构与整条音乐旅程的分段编排
 <p align="center">
-  <img src="assets/推荐说明.png" alt="推荐说明界面" width="800">
+  <img src="assets/歌单创作.png" alt="歌单创作视图：推荐理由与歌单结构" width="800">
 </p>
-
+<p align="center">
+  <img src="assets/音乐旅程.png" alt="音乐旅程视图：按情绪分段的音乐旅程时间线" width="800">
+</p>
 
 ## Quick Start
 
@@ -135,16 +165,6 @@ npm run dev
 
 > 💡 **提示**：确保设置了 `SILICONFLOW_API_KEY` 环境变量或在 `setting.json` 中配置。
 
-### 快速部署建议
-
-- **Docker 化部署**：在项目根目录创建 Dockerfile，复制代码并执行 `streamlit run` 或 `uvicorn api.server:app`
-- **云端部署**：
-  - Streamlit界面：使用 Streamlit Community Cloud、Railway、Render 等平台
-  - API服务器：使用 Railway、Render、Fly.io 等支持Python的平台
-  - 前端：使用 Vercel、Netlify 等平台部署Next.js应用
-- **内部使用**：可在企业 VPN 或内网环境中运行，结合 Nginx 做反向代理
-- **生产环境**：建议使用 Gunicorn + Uvicorn workers 运行FastAPI，使用Nginx处理SSE连接
-
 ## 配置说明
 
 - `SILICONFLOW_API_KEY`：硅基流动平台获取的 API Key
@@ -202,6 +222,7 @@ npm run dev
 - **LangGraph 工作流**：基于有向图节点管理不同任务
 - **音乐工具层**：负责搜索、相似度匹配、心情标签解析
 - **LLM 层**：负责自然语言理解与推荐解释生成
+- **音乐旅程服务**：`MusicJourneyService` 支持故事/情绪曲线分析、分段规划与流式输出
 - **FastAPI 后端**：提供RESTful API和SSE流式接口
 - **Next.js 前端**：现代化UI，支持实时流式渲染
 - **Streamlit 前端**（可选）：传统Web界面，展示推荐结果、可视化推荐理由
@@ -227,7 +248,6 @@ npm run dev
 
 ## 数据与扩展
 
-- 示例数据存储在 `data/music_database.json`
 - 音乐条目字段包含标题、艺术家、流派、情绪标签、推荐理由等
 - 未来可对接 Spotify、网易云、Apple Music 等真实数据源
 - 支持嵌入模型，将用户喜好与历史行为写入向量数据库
@@ -296,7 +316,7 @@ deep search/
 - [x] SSE流式输出支持
 - [x] FastAPI后端API
 - [x] Next.js前端界面
-- [√] 对接 Spotify / 网易云音乐 API，实现实时乐库
+- [x] 对接 Spotify，实现实时乐库
 - [ ] 支持用户登录与偏好记忆
 - [ ] 在线播放 & 歌单分享功能
 - [ ] 推荐算法优化（协同过滤、向量检索）
