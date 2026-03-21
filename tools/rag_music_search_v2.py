@@ -225,12 +225,17 @@ class RAGMusicSearchV2:
             self.vector_store = SimpleVectorStore()
 
         # 读取 embedding 配置
+        # 优先级：EMBED_API_KEY > SILICONFLOW_API_KEY > "ollama"（本地 Ollama 默认值）
         try:
             from config.settings_loader import load_settings_from_json
             settings = load_settings_from_json()
             self._embed_base_url = settings.get("OLLAMA_BASE_URL", "http://localhost:11434/v1")
             self._embed_model = settings.get("OLLAMA_EMBED_MODEL", "bge-m3:latest")
-            self._embed_api_key = "ollama"
+            self._embed_api_key = (
+                settings.get("EMBED_API_KEY")
+                or settings.get("SILICONFLOW_API_KEY")
+                or "ollama"
+            )
         except Exception:
             self._embed_base_url = "http://localhost:11434/v1"
             self._embed_model = "bge-m3:latest"

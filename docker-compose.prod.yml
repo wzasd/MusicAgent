@@ -1,0 +1,47 @@
+version: '3.8'
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: music_backend
+    ports:
+      - "8501:8501"
+    volumes:
+      # ChromaDB 向量库（本地持久化，不打包进镜像）
+      - ./data/chroma_db:/app/data/chroma_db
+      # 歌词数据库
+      - ./data/lyrics_database.json:/app/data/lyrics_database.json
+      # 音乐数据库
+      - ./data/music_database.json:/app/data/music_database.json
+      # 密钥配置（不提交到 git，部署时手动上传）
+      - ./setting.json:/app/setting.json
+    restart: unless-stopped
+    environment:
+      - PYTHONUNBUFFERED=1
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8501/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  frontend:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+      args:
+        # 容器内部用 service name 访问后端
+        - BACKEND_URL=http://backend:8501
+    container_name: music_frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - BACKEND_URL=http://backend:8501
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes: {}

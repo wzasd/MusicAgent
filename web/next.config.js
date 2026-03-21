@@ -1,16 +1,16 @@
 /** @type {import('next').NextConfig} */
+const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:8501';
+
 const nextConfig = {
   reactStrictMode: true,
-  // 如果需要代理到后端 API
   async rewrites() {
     return [
       {
         source: '/api/:path*',
-        destination: 'http://localhost:8501/:path*', // 代理到 Streamlit 后端
+        destination: `${BACKEND_URL}/:path*`,
       },
     ];
   },
-  // 图片优化配置
   images: {
     domains: ['localhost'],
     unoptimized: process.env.NODE_ENV === 'development',

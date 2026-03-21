@@ -1,0 +1,24 @@
+.git
+__pycache__
+*.pyc
+*.pyo
+.env
+.env.*
+.cache
+
+# 数据文件（通过 volume 挂载，不打包进镜像）
+data/chroma_db
+data/raw
+data/corpus.jsonl
+data/music_corpus.jsonl
+
+# 前端构建产物
+web/node_modules
+web/.next
+
+# 开发工具
+.vscode
+.idea
+*.swp
+*.log
+logs/

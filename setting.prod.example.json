@@ -1,0 +1,17 @@
+{
+  "settings": {
+    "SILICONFLOW_API_KEY": "your-siliconflow-api-key",
+    "SILICONFLOW_BASE_URL": "https://api.siliconflow.cn/v1",
+    "SILICONFLOW_CHAT_MODEL": "Qwen/Qwen2.5-72B-Instruct",
+
+    "EMBED_API_KEY": "your-siliconflow-api-key",
+    "OLLAMA_BASE_URL": "https://api.siliconflow.cn/v1",
+    "OLLAMA_EMBED_MODEL": "BAAI/bge-m3",
+
+    "TAILYAPI_API_KEY": "your-tavily-api-key",
+    "TAILYAPI_BASE_URL": "https://api.tavily.com",
+
+    "SPOTIFY_CLIENT_ID": "",
+    "SPOTIFY_CLIENT_SECRET": ""
+  }
+}
