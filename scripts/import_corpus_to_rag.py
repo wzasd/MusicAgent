@@ -112,7 +112,7 @@ def load_jsonl(path: str, limit: Optional[int] = None) -> List[Dict]:
     return entries
 
 
-def import_to_chroma(entries: List[Dict], openai_client, embed_model: str, batch_size: int = 32):
+def import_to_chroma(entries: List[Dict], openai_client, embed_model: str, batch_size: int = 32, rate_limit_sleep: float = 0.0):
     """批量生成 embedding 并存入 ChromaDB"""
     import chromadb
     from chromadb.config import Settings
@@ -207,8 +207,8 @@ def import_to_chroma(entries: List[Dict], openai_client, embed_model: str, batch
         progress = batch_start + len(batch)
         logger.info(f"进度: {progress}/{total} ({100*progress//total}%) | 已导入: {imported} | 失败: {failed}")
 
-        # 避免 API 速率限制
-        time.sleep(0.3)
+        if rate_limit_sleep > 0:
+            time.sleep(rate_limit_sleep)
 
     logger.info(f"\n完成! 导入: {imported}, 失败: {failed}, ChromaDB 总量: {collection.count()}")
     return imported
@@ -218,6 +218,8 @@ def main():
     parser = argparse.ArgumentParser(description="导入 corpus.jsonl 到 ChromaDB RAG")
     parser.add_argument("--all", action="store_true", help="使用完整 corpus.jsonl (147k)")
     parser.add_argument("--limit", type=int, default=None, help="限制导入条数")
+    parser.add_argument("--local", action="store_true", help="使用本地 Ollama embedding（默认 bge-m3）")
+    parser.add_argument("--local-model", default="bge-m3:latest", help="Ollama 模型名，默认 bge-m3:latest")
     args = parser.parse_args()
 
     if args.all:
@@ -239,14 +241,22 @@ def main():
 
     logger.info("初始化 embedding 模型...")
     from openai import OpenAI
-    from config.settings_loader import load_settings_from_json
-    settings = load_settings_from_json()
-    api_key = os.getenv("SILICONFLOW_API_KEY") or settings.get("SILICONFLOW_API_KEY")
-    base_url = settings.get("SILICONFLOW_BASE_URL", "https://api.siliconflow.cn/v1")
-    embed_model = settings.get("SILICONFLOW_EMBED_MODEL", "BAAI/bge-m3")
+    if args.local:
+        base_url = "http://localhost:11434/v1"
+        api_key = "ollama"
+        embed_model = args.local_model
+        logger.info(f"使用本地 Ollama: {embed_model}")
+    else:
+        from config.settings_loader import load_settings_from_json
+        settings = load_settings_from_json()
+        api_key = os.getenv("SILICONFLOW_API_KEY") or settings.get("SILICONFLOW_API_KEY")
+        base_url = settings.get("SILICONFLOW_BASE_URL", "https://api.siliconflow.cn/v1")
+        embed_model = settings.get("SILICONFLOW_EMBED_MODEL", "BAAI/bge-m3")
+        logger.info(f"使用 SiliconFlow API: {embed_model}")
     client = OpenAI(api_key=api_key, base_url=base_url)
 
-    count = import_to_chroma(entries, client, embed_model)
+    sleep = 0.0 if args.local else 0.3
+    count = import_to_chroma(entries, client, embed_model, rate_limit_sleep=sleep)
     print(f"\n✅ 导入完成，新增 {count} 条到 ChromaDB")
 
 
