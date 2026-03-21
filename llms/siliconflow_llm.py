@@ -166,6 +166,52 @@ class SiliconFlowLLM(BaseLLM):
         }
 
 
+def get_embeddings():
+    """
+    获取LangChain兼容的Embedding模型（使用硅基流动）
+
+    Returns:
+        OpenAIEmbeddings实例，支持 embed_query / aembed_query
+    """
+    from langchain_openai import OpenAIEmbeddings
+
+    api_key = os.getenv("SILICONFLOW_API_KEY")
+    if not api_key:
+        try:
+            from config.settings_loader import load_settings_from_json
+            settings = load_settings_from_json()
+            api_key = settings.get("SILICONFLOW_API_KEY")
+        except:
+            pass
+
+    if not api_key:
+        raise ValueError("硅基流动API Key未找到！请设置SILICONFLOW_API_KEY环境变量或在setting.json中配置")
+
+    base_url = os.getenv("SILICONFLOW_BASE_URL", "https://api.siliconflow.cn/v1")
+    if base_url == "https://api.siliconflow.cn/v1":
+        try:
+            from config.settings_loader import load_settings_from_json
+            settings = load_settings_from_json()
+            base_url = settings.get("SILICONFLOW_BASE_URL", base_url)
+        except:
+            pass
+
+    embed_model = os.getenv("SILICONFLOW_EMBED_MODEL")
+    if not embed_model:
+        try:
+            from config.settings_loader import load_settings_from_json
+            settings = load_settings_from_json()
+            embed_model = settings.get("SILICONFLOW_EMBED_MODEL", "BAAI/bge-m3")
+        except:
+            embed_model = "BAAI/bge-m3"
+
+    return OpenAIEmbeddings(
+        api_key=api_key,
+        base_url=base_url,
+        model=embed_model,
+    )
+
+
 def get_chat_model() -> ChatOpenAI:
     """
     获取LangChain兼容的聊天模型（使用硅基流动）
