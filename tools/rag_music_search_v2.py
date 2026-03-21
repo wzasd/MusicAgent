@@ -10,7 +10,6 @@ from dataclasses import dataclass
 import numpy as np
 
 from config.logging_config import get_logger
-from llms.siliconflow_llm import get_embeddings
 
 logger = get_logger(__name__)
 
@@ -159,28 +158,36 @@ class ChromaVectorStore:
 
 
 class RAGMusicSearchV2:
-    """RAG 音乐搜索引擎 V2 - 使用真实 Embedding"""
+    """RAG 音乐搜索引擎 V2 - 使用真实 Embedding + ChromaDB"""
 
     def __init__(self, use_chroma: bool = True):
-        self.embedding_model = get_embeddings()
         self.use_chroma = use_chroma
 
         if use_chroma:
             self.vector_store = ChromaVectorStore()
         else:
-            # 回退到内存存储
             from tools.rag_music_search import SimpleVectorStore
             self.vector_store = SimpleVectorStore()
 
-        self._local_db_path = os.path.join(
-            os.path.dirname(__file__), "..", "data", "music_database.json"
-        )
+        # 读取 embedding 配置
+        try:
+            from config.settings_loader import load_settings_from_json
+            settings = load_settings_from_json()
+            self._embed_base_url = settings.get("OLLAMA_BASE_URL", "http://localhost:11434/v1")
+            self._embed_model = settings.get("OLLAMA_EMBED_MODEL", "bge-m3:latest")
+            self._embed_api_key = "ollama"
+        except Exception:
+            self._embed_base_url = "http://localhost:11434/v1"
+            self._embed_model = "bge-m3:latest"
+            self._embed_api_key = "ollama"
 
     async def _create_embedding(self, text: str) -> List[float]:
-        """使用 SiliconFlow 创建文本嵌入"""
+        """使用本地 Ollama bge-m3 创建文本嵌入"""
         try:
-            embedding = await self.embedding_model.aembed_query(text)
-            return embedding
+            from openai import AsyncOpenAI
+            client = AsyncOpenAI(api_key=self._embed_api_key, base_url=self._embed_base_url)
+            resp = await client.embeddings.create(model=self._embed_model, input=text)
+            return resp.data[0].embedding
         except Exception as e:
             logger.error(f"生成嵌入失败: {e}")
             return []

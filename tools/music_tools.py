@@ -457,62 +457,54 @@ class MusicSearchTool:
             add_step("歌词搜索", "error", {"error": str(e), "elapsed_ms": round(elapsed, 2)})
             logger.warning(f"【歌词维度】搜索失败: {e}")
 
-        # ========== 第 1 层: RAG 本地向量搜索 (歌名/艺术家维度) ==========
+        # ========== 第 1 层: RAG 向量搜索（ChromaDB + bge-m3） ==========
         if use_rag_first:
             try:
-                from tools.rag_music_search import get_rag_music_search
-                rag_search = get_rag_music_search()
+                from tools.rag_music_search_v2 import get_rag_music_search_v2
+                rag_search = get_rag_music_search_v2()
 
-                # 构建搜索查询（结合流派）
+                if rag_search.vector_store.count() == 0:
+                    raise ValueError("ChromaDB 为空")
+
                 search_query = f"{query} {genre}" if genre else query
-
-                # 执行 RAG 搜索
-                rag_results = rag_search.search(search_query, top_k=limit)
+                rag_results = await rag_search.search(search_query, top_k=limit)
 
                 if rag_results:
-                    # 评估 RAG 结果质量：检查最高相似度分数
                     max_similarity = max(r.get("similarity_score", 0) for r in rag_results)
-
-                    # 根据查询类型设定不同的质量阈值
-                    # 使用混合匹配后，字面匹配可达 0.9+，降低阈值确保有效结果不被过滤
-                    is_specific_query = len(query) <= 10 and not any(c in query for c in ["感觉", "心情", "适合", "推荐"])
-                    similarity_threshold = 0.5 if is_specific_query else 0.3
+                    similarity_threshold = 0.55
 
                     if max_similarity >= similarity_threshold:
-                        # RAG 结果质量足够，转换为 Song 对象返回
                         rag_songs = []
                         for result in rag_results:
-                            # 处理 genre 字段（可能是列表或字符串）
-                            genre = result.get("genre")
-                            if isinstance(genre, list) and genre:
-                                genre = genre[0]  # 取第一个流派
-                            elif not isinstance(genre, str):
-                                genre = None
+                            song_genre = result.get("genre")
+                            if isinstance(song_genre, list) and song_genre:
+                                song_genre = song_genre[0]
+                            elif not isinstance(song_genre, str):
+                                song_genre = None
 
                             song = Song(
                                 title=result.get("title", "Unknown"),
                                 artist=result.get("artist", "Unknown Artist"),
                                 album=result.get("album"),
-                                genre=genre,
+                                genre=song_genre,
                                 year=result.get("year"),
                                 duration=result.get("duration"),
                                 popularity=int(result.get("similarity_score", 0.5) * 100)
                             )
                             rag_songs.append(song)
 
-                        logger.info(f"✅ RAG 本地搜索成功: {len(rag_songs)} 首歌曲, 最高相似度={max_similarity:.2f} (时延 < 100ms)")
                         elapsed = (time.time() - step0_start) * 1000
                         add_step("RAG搜索", "success", {"count": len(rag_songs), "max_similarity": max_similarity, "elapsed_ms": round(elapsed, 2)})
-                        return {"songs": rag_songs[:limit], "steps": steps, "total_elapsed_ms": round((time.time() - total_start) * 1000, 2), "source": "rag"}
+                        logger.info(f"✅ ChromaDB RAG 搜索成功: {len(rag_songs)} 首, 最高相似度={max_similarity:.2f}")
+                        return {"songs": rag_songs[:limit], "steps": steps, "total_elapsed_ms": round((time.time() - total_start) * 1000, 2), "source": "rag_chroma"}
                     else:
-                        # RAG 结果质量不够，fallback 到外部 API
                         elapsed = (time.time() - step0_start) * 1000
                         add_step("RAG搜索", "fallback", {"reason": f"低相似度 {max_similarity:.2f} < {similarity_threshold}", "elapsed_ms": round(elapsed, 2)})
-                        logger.info(f"⚠️ RAG 搜索结果质量不足 (最高相似度={max_similarity:.2f} < {similarity_threshold}), 将使用外部 API")
+                        logger.info(f"⚠️ RAG 相似度不足 ({max_similarity:.2f}), 回退到外部 API")
                 else:
                     elapsed = (time.time() - step0_start) * 1000
                     add_step("RAG搜索", "fallback", {"reason": "无结果", "elapsed_ms": round(elapsed, 2)})
-                    logger.info("RAG 无结果，准备回退到外部 API")
+                    logger.info("RAG 无结果，回退到外部 API")
 
             except Exception as e:
                 elapsed = (time.time() - step0_start) * 1000
