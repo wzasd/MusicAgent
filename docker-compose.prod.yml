@@ -34,11 +34,13 @@ services:
       args:
         # 容器内部用 service name 访问后端
         - BACKEND_URL=http://backend:8501
+        - NEXT_PUBLIC_API_URL=http://backend:8501
     container_name: music_frontend
     ports:
       - "3000:3000"
     environment:
       - BACKEND_URL=http://backend:8501
+      - NEXT_PUBLIC_API_URL=http://backend:8501
     depends_on:
       backend:
         condition: service_healthy

@@ -13,6 +13,10 @@ COPY . .
 ARG BACKEND_URL=http://localhost:8501
 ENV BACKEND_URL=$BACKEND_URL
 
+# NEXT_PUBLIC_* 变量在构建时内联，必须作为 build arg 传入
+ARG NEXT_PUBLIC_API_URL=http://localhost:8501
+ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
+
 # 构建 Next.js
 RUN npm run build
 
