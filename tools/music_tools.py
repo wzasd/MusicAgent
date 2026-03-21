@@ -424,7 +424,7 @@ class MusicSearchTool:
             if is_lyrics or lyrics_engine.is_lyrics_query(query):
                 is_lyrics_mode = True
                 logger.info(f"【歌词维度】识别为歌词搜索: '{query}'")
-                lyrics_results = lyrics_engine.search_by_lyrics(query, top_k=limit)
+                lyrics_results = await lyrics_engine.search_with_llm_fallback(query, top_k=limit)
 
                 if lyrics_results:
                     # 转换为 Song 对象
@@ -438,12 +438,13 @@ class MusicSearchTool:
                         )
                         lyrics_songs.append(song)
 
+                    result_source = lyrics_results[0].get("source", "lyrics_db")
                     elapsed = (time.time() - step0_start) * 1000
-                    add_step("歌词搜索", "success", {"count": len(lyrics_songs), "elapsed_ms": round(elapsed, 2)})
-                    logger.info(f"✅ 【歌词维度】搜索成功: {len(lyrics_songs)} 首歌曲")
+                    add_step("歌词搜索", "success", {"count": len(lyrics_songs), "source": result_source, "elapsed_ms": round(elapsed, 2)})
+                    logger.info(f"✅ 【歌词维度】搜索成功: {len(lyrics_songs)} 首歌曲 (来源={result_source})")
                     final_songs = lyrics_songs[:limit]
-                    final_source = "lyrics_db"
-                    return {"songs": final_songs, "steps": steps, "total_elapsed_ms": round((time.time() - total_start) * 1000, 2), "source": "lyrics_db"}
+                    final_source = result_source
+                    return {"songs": final_songs, "steps": steps, "total_elapsed_ms": round((time.time() - total_start) * 1000, 2), "source": result_source}
                 else:
                     elapsed = (time.time() - step0_start) * 1000
                     add_step("歌词搜索", "fallback", {"reason": "no_match", "elapsed_ms": round(elapsed, 2)})

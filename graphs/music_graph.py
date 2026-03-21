@@ -438,8 +438,8 @@ class MusicRecommendationGraph:
             from tools.lyrics_search import get_lyrics_search_engine
             lyrics_engine = get_lyrics_search_engine()
 
-            # 执行歌词搜索
-            results = lyrics_engine.search_by_lyrics(lyrics, top_k=10)
+            # 执行歌词搜索（本地DB优先，未命中则 LLM 兜底）
+            results = await lyrics_engine.search_with_llm_fallback(lyrics, top_k=10)
 
             # 转换为字典格式
             search_results = []

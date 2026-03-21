@@ -4,6 +4,7 @@
 
 import json
 import os
+import re
 from typing import Dict, List, Optional, Any
 from difflib import SequenceMatcher
 
@@ -175,6 +176,77 @@ class LyricsSearchEngine:
         query_clean = re.sub(r'[是]?[什什么]?[么歌]+?$', '', query_clean)
 
         return query_clean.strip()
+
+
+    async def search_with_llm_fallback(self, query: str, top_k: int = 5) -> List[Dict[str, Any]]:
+        """
+        歌词搜索：本地数据库优先，命中不了则调 LLM 识别
+
+        Args:
+            query: 用户原始输入（含歌词片段）
+            top_k: 返回结果数量
+
+        Returns:
+            歌曲列表，source 字段标记来源 ("lyrics_db" 或 "llm_lyrics")
+        """
+        # Step 1: 本地数据库匹配
+        local_results = self.search_by_lyrics(query, top_k=top_k)
+        if local_results and local_results[0]["similarity_score"] >= 0.6:
+            logger.info(f"歌词本地命中: {local_results[0]['title']} (score={local_results[0]['similarity_score']:.2f})")
+            for r in local_results:
+                r["source"] = "lyrics_db"
+            return local_results
+
+        # Step 2: LLM 兜底识别
+        lyrics_content = self.extract_lyrics_content(query)
+        if not lyrics_content:
+            lyrics_content = query
+
+        logger.info(f"本地未命中，调用 LLM 识别歌词: '{lyrics_content}'")
+
+        try:
+            from llms.siliconflow_llm import SiliconFlowLLM
+            from prompts.music_prompts import LYRICS_IDENTIFICATION_PROMPT
+
+            llm = SiliconFlowLLM()
+            prompt = LYRICS_IDENTIFICATION_PROMPT.format(lyrics=lyrics_content)
+            response = llm.invoke_text("你是音乐专家。", prompt)
+
+            # 解析 JSON
+            json_match = re.search(r'\{.*\}', response, re.DOTALL)
+            if not json_match:
+                logger.warning("LLM 返回内容无法解析为 JSON")
+                return local_results
+
+            data = json.loads(json_match.group())
+            title = data.get("title")
+            artist = data.get("artist")
+            confidence = float(data.get("confidence", 0))
+            reason = data.get("reason", "")
+
+            if not title or confidence < 0.3:
+                logger.info(f"LLM 识别置信度过低 ({confidence}): {reason}")
+                return local_results
+
+            logger.info(f"LLM 识别结果: {title} - {artist} (confidence={confidence})")
+
+            result = {
+                "title": title,
+                "artist": artist or "未知艺术家",
+                "genre": [],
+                "mood": [],
+                "matched_lyrics": lyrics_content,
+                "similarity_score": confidence,
+                "match_type": "llm",
+                "source": "llm_lyrics",
+                "low_confidence": confidence < 0.7,
+                "reason": reason,
+            }
+            return [result]
+
+        except Exception as e:
+            logger.error(f"LLM 歌词识别失败: {e}")
+            return local_results
 
 
 # 全局实例
