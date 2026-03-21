@@ -38,6 +38,7 @@ setting.json
 # 日志
 *.log
 logs/
+!web/app/logs/
 output/
 
 # 数据库

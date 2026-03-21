@@ -30,7 +30,7 @@ export default function LogsPage() {
 
   const fetchLogs = async () => {
     try {
-      const response = await fetch('http://localhost:8501/api/logs?limit=20');
+      const response = await fetch('/api/logs?limit=20');
       if (!response.ok) {
         throw new Error('Failed to fetch logs');
       }
