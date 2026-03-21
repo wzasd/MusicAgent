@@ -37,8 +37,7 @@ setting.json
 
 # 日志
 *.log
-logs/
-!web/app/logs/
+/logs/
 output/
 
 # 数据库
