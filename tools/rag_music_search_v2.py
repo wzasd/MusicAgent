@@ -152,6 +152,61 @@ class ChromaVectorStore:
             logger.error(f"搜索失败: {e}")
             return []
 
+    def get_by_artist(self, artist: str, top_k: int = 10) -> List[Dict]:
+        """通过艺术家名查找歌曲：精确匹配 → 文档包含 → 去空格模糊匹配"""
+        def _make_result(rid, m, score):
+            return {
+                "id": rid,
+                "title": m["title"],
+                "artist": m["artist"],
+                "album": m.get("album", ""),
+                "genre": json.loads(m.get("genre", "[]")),
+                "mood": json.loads(m.get("mood", "[]")),
+                "description": m.get("description", ""),
+                "year": m.get("year"),
+                "duration": m.get("duration"),
+                "source": m.get("source", "unknown"),
+                "similarity_score": score,
+            }
+
+        try:
+            # 第1步：精确匹配（大小写变体）
+            variants = list({artist, artist.lower(), artist.upper(), artist.title()})
+            for variant in variants:
+                results = self._collection.get(
+                    where={"artist": {"$eq": variant}},
+                    limit=top_k,
+                    include=["metadatas"]
+                )
+                if results["ids"]:
+                    return [_make_result(rid, m, 1.0)
+                            for rid, m in zip(results["ids"], results["metadatas"])]
+
+            # 第2步：前缀文档搜索 + 子串匹配（大小写变体）
+            # 处理 "selena" → "Selena Gomez"，"selenagomez" → "Selena Gomez"
+            artist_nospace = artist.lower().replace(" ", "")
+            raw_prefix = artist_nospace[:min(6, len(artist_nospace))]
+            prefix_variants = list({raw_prefix, raw_prefix.capitalize(), raw_prefix.upper()})
+            for pfx in prefix_variants:
+                results = self._collection.get(
+                    where_document={"$contains": pfx},
+                    limit=200,
+                    include=["metadatas"]
+                )
+                if results["ids"]:
+                    # 用去空格子串匹配：artist_nospace ⊆ stored_artist_nospace
+                    # 这样 "selena" 匹配 "selenagomez"，"selenagomez" 也匹配自身
+                    matched = [_make_result(rid, m, 0.9)
+                               for rid, m in zip(results["ids"], results["metadatas"])
+                               if artist_nospace in m["artist"].lower().replace(" ", "")]
+                    if matched:
+                        return matched[:top_k]
+
+            return []
+        except Exception as e:
+            logger.error(f"按艺术家查找失败: {e}")
+            return []
+
     def count(self) -> int:
         """获取歌曲数量"""
         return self._collection.count()
@@ -240,7 +295,7 @@ class RAGMusicSearchV2:
             return 0
 
     async def search(self, query: str, top_k: int = 10) -> List[Dict[str, Any]]:
-        """语义搜索歌曲"""
+        """语义搜索歌曲，自动去重（按 title+artist）"""
         if self.use_chroma and self.vector_store.count() == 0:
             logger.warning("ChromaDB 为空，请先构建数据库")
             return []
@@ -250,9 +305,18 @@ class RAGMusicSearchV2:
         if not query_embedding:
             return []
 
-        # 搜索
-        results = self.vector_store.search(query_embedding, top_k=top_k)
-        return results
+        # 多取一些结果以保证去重后仍有 top_k 条
+        raw_results = self.vector_store.search(query_embedding, top_k=top_k * 3)
+
+        # 按 (title, artist) 去重，保留相似度最高的
+        seen = {}
+        for r in raw_results:
+            key = (r["title"].lower().strip(), r["artist"].lower().strip())
+            if key not in seen or r["similarity_score"] > seen[key]["similarity_score"]:
+                seen[key] = r
+
+        deduped = sorted(seen.values(), key=lambda x: x["similarity_score"], reverse=True)
+        return deduped[:top_k]
 
     async def search_by_mood(self, mood: str, top_k: int = 10) -> List[Dict]:
         """根据情绪搜索"""

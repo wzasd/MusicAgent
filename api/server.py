@@ -694,17 +694,26 @@ async def search_music(request: SearchRequest):
             )
             songs = search_result.get("songs", [])
             source = search_result.get("source", "unknown")
-        elif intent_type in ["recommend_by_artist", "recommend_by_genre"]:
-            # 艺术家或流派搜索
-            search_param = parameters.get("artist") or parameters.get("genre") or original_query
-            cleaned_query = _clean_search_query(search_param)
-            search_result = await search_tool.search_songs_with_steps(
-                query=cleaned_query,
-                genre=request.genre,
-                limit=request.limit,
-            )
-            songs = search_result.get("songs", [])
-            source = search_result.get("source", "unknown")
+        elif intent_type == "recommend_by_artist":
+            # 艺术家搜索：用元数据精确匹配，不做语义搜索
+            artist_name = parameters.get("artist") or original_query
+            artist_songs = await search_tool.get_songs_by_artist(artist_name, limit=request.limit)
+            if artist_songs:
+                songs = [s.to_dict() for s in artist_songs]
+                source = "artist_metadata"
+            else:
+                songs = []
+                source = "artist_not_found"
+        elif intent_type == "recommend_by_genre":
+            # 流派搜索
+            genre_name = parameters.get("genre") or original_query
+            genre_songs = await search_tool.get_songs_by_genre(genre_name, limit=request.limit)
+            if genre_songs:
+                songs = [s.to_dict() for s in genre_songs]
+                source = "genre_search"
+            else:
+                songs = []
+                source = "genre_not_found"
         elif intent_type == "recommend_by_activity":
             # 活动场景推荐
             activity = parameters.get("activity", "放松")
@@ -748,11 +757,16 @@ async def search_music(request: SearchRequest):
         elapsed_time = (__import__('time').time() - start_time) * 1000
 
         # 完成日志记录
+        def _song_brief(s):
+            d = s.to_dict() if hasattr(s, 'to_dict') else s
+            return {"title": d.get("title", ""), "artist": d.get("artist", "")}
+
         log_entry.update({
             "result_count": len(songs),
             "elapsed_ms": round(elapsed_time, 2),
             "status": "success",
-            "source": source
+            "source": source,
+            "songs": [_song_brief(s) for s in songs[:20]],
         })
         add_search_log(log_entry)
 

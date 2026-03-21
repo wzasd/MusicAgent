@@ -566,56 +566,77 @@ class MusicSearchTool:
     
     async def get_songs_by_genre(self, genre: str, limit: int = 10) -> List[Song]:
         """
-        根据流派获取歌曲
-        
-        Args:
-            genre: 音乐流派
-            limit: 返回结果数量
-            
-        Returns:
-            歌曲列表
+        根据流派获取歌曲，优先本地DB，本地无结果时使用RAG V2搜索
         """
         try:
             logger.info(f"按流派获取歌曲: genre='{genre}'")
-            
+
             results = [
-                song for song in self.music_db 
+                song for song in self.music_db
                 if song.genre and genre.lower() in song.genre.lower()
             ]
-            
-            # 按流行度排序
             results.sort(key=lambda x: x.popularity or 0, reverse=True)
-            
-            return results[:limit]
-            
+
+            if results:
+                return results[:limit]
+
+            # 本地DB无结果，使用RAG V2语义搜索
+            logger.info(f"本地DB无{genre}结果，使用RAG V2搜索")
+            from tools.rag_music_search_v2 import get_rag_music_search_v2
+            rag_search = get_rag_music_search_v2()
+            rag_results = await rag_search.search(genre, top_k=limit)
+            songs = []
+            for r in rag_results:
+                gv = r.get("genre")
+                genre_str = gv if isinstance(gv, str) else (gv[0] if gv else genre)
+                songs.append(Song(
+                    title=r["title"],
+                    artist=r["artist"],
+                    genre=genre_str,
+                    duration=r.get("duration") or 0,
+                    popularity=int(r.get("similarity_score", 0.8) * 100),
+                ))
+            return songs
+
         except Exception as e:
             logger.error(f"按流派获取歌曲失败: {str(e)}")
             return []
-    
+
     async def get_songs_by_artist(self, artist: str, limit: int = 10) -> List[Song]:
         """
-        根据艺术家获取歌曲
-        
-        Args:
-            artist: 艺术家名称
-            limit: 返回结果数量
-            
-        Returns:
-            歌曲列表
+        根据艺术家获取歌曲，优先本地DB，本地无结果时使用RAG V2搜索
         """
         try:
             logger.info(f"按艺术家获取歌曲: artist='{artist}'")
-            
+
             results = [
-                song for song in self.music_db 
+                song for song in self.music_db
                 if artist.lower() in song.artist.lower()
             ]
-            
-            # 按年份排序（最新的在前）
             results.sort(key=lambda x: x.year or 0, reverse=True)
-            
-            return results[:limit]
-            
+
+            if results:
+                return results[:limit]
+
+            # 本地DB无结果，使用ChromaDB元数据精确查找
+            logger.info(f"本地DB无{artist}结果，使用ChromaDB元数据查找")
+            from tools.rag_music_search_v2 import get_rag_music_search_v2
+            rag_search = get_rag_music_search_v2()
+            rag_results = rag_search.vector_store.get_by_artist(artist, top_k=limit)
+            if not rag_results:
+                logger.info(f"ChromaDB 中未找到艺术家: {artist}")
+                return []
+            return [
+                Song(
+                    title=r["title"],
+                    artist=r["artist"],
+                    genre=r.get("genre", "") if isinstance(r.get("genre"), str) else ((r.get("genre") or [""])[0]),
+                    duration=r.get("duration") or 0,
+                    popularity=int(r.get("similarity_score", 0.8) * 100),
+                )
+                for r in rag_results
+            ]
+
         except Exception as e:
             logger.error(f"按艺术家获取歌曲失败: {str(e)}")
             return []
@@ -808,8 +829,36 @@ class MusicRecommenderEngine:
             
             if not spotify_genres:
                 spotify_genres = ["pop"]  # 默认流派
-            
-            # 使用 Spotify 推荐 API
+
+            # ========== 第 1 层: RAG V2 语义搜索 ==========
+            try:
+                from tools.rag_music_search_v2 import get_rag_music_search_v2
+                rag_search = get_rag_music_search_v2()
+                rag_results = await rag_search.search_by_mood(mood, top_k=limit * 2)
+                if rag_results:
+                    recommendations = []
+                    for result in rag_results[:limit]:
+                        gv = result.get("genre")
+                        song = Song(
+                            title=result.get("title", "Unknown"),
+                            artist=result.get("artist", "Unknown Artist"),
+                            album=result.get("album"),
+                            genre=gv if isinstance(gv, str) else (gv[0] if gv else None),
+                            year=result.get("year"),
+                            duration=result.get("duration"),
+                            popularity=int(result.get("similarity_score", 0.5) * 100)
+                        )
+                        recommendations.append(MusicRecommendation(
+                            song=song,
+                            reason=f"这首歌曲很适合你现在的{mood}心情",
+                            similarity_score=result.get("similarity_score", 0.8)
+                        ))
+                    logger.info(f"✅ RAG V2 搜索成功: {len(recommendations)} 首 '{mood}' 歌曲")
+                    return recommendations
+            except Exception as e:
+                logger.warning(f"RAG V2 搜索失败: {e}")
+
+            # ========== 第 2 层: Spotify 推荐 API (外部) ==========
             songs = await self.mcp_adapter.get_recommendations(
                 seed_genres=spotify_genres[:5],
                 limit=limit
@@ -979,36 +1028,19 @@ class MusicRecommenderEngine:
             if not spotify_genres:
                 spotify_genres = ["pop"]
             
-            # ========== 第 1 层: RAG 本地搜索 (< 100ms) ==========
-            logger.info(f"使用 RAG 搜索 '{activity}' 活动的歌曲")
+            # ========== 第 1 层: RAG V2 语义搜索 ==========
+            logger.info(f"使用 RAG V2 搜索 '{activity}' 活动的歌曲")
             try:
-                from tools.rag_music_search import get_rag_music_search
-                rag_search = get_rag_music_search()
+                from tools.rag_music_search_v2 import get_rag_music_search_v2
+                rag_search = get_rag_music_search_v2()
 
-                # 活动到情绪的映射
-                activity_to_mood = {
-                    "运动": "活力",
-                    "健身": "活力",
-                    "跑步": "运动",
-                    "学习": "专注",
-                    "工作": "专注",
-                    "开车": "活力",
-                    "睡觉": "睡眠",
-                    "休息": "放松",
-                    "派对": "派对",
-                    "聚会": "派对",
-                    "晨跑": "运动",
-                }
+                rag_results = await rag_search.search_by_activity(activity, top_k=limit * 2)
 
-                # 优先按情绪搜索
-                mood = activity_to_mood.get(activity, activity)
-                rag_results = rag_search.search_by_mood(mood, top_k=limit * 2)
-
-                # 如果情绪搜索不够，按活动场景搜索补充
+                # 结果不足时补充通用语义搜索
                 if len(rag_results) < limit:
-                    activity_results = rag_search.search_by_activity(activity, top_k=limit)
+                    extra = await rag_search.search(activity, top_k=limit)
                     seen_titles = {r["title"] for r in rag_results}
-                    for r in activity_results:
+                    for r in extra:
                         if r["title"] not in seen_titles:
                             rag_results.append(r)
                             seen_titles.add(r["title"])
@@ -1018,26 +1050,27 @@ class MusicRecommenderEngine:
                 if rag_results:
                     recommendations = []
                     for result in rag_results[:limit]:
+                        gv = result.get("genre")
                         song = Song(
                             title=result.get("title", "Unknown"),
                             artist=result.get("artist", "Unknown Artist"),
                             album=result.get("album"),
-                            genre=result.get("genre") if isinstance(result.get("genre"), str) else None,
+                            genre=gv if isinstance(gv, str) else (gv[0] if gv else None),
                             year=result.get("year"),
                             duration=result.get("duration"),
                             popularity=int(result.get("similarity_score", 0.5) * 100)
                         )
-                        reason = f"这首歌很适合{activity}时听，{result.get('mood', ['节奏和氛围都很搭'])[0] if result.get('mood') else '节奏和氛围都很搭'}"
+                        reason = f"这首歌很适合{activity}时听，节奏和氛围都很搭"
                         recommendations.append(MusicRecommendation(
                             song=song,
                             reason=reason,
                             similarity_score=result.get("similarity_score", 0.8)
                         ))
-                    logger.info(f"✅ RAG 本地搜索成功: {len(recommendations)} 首 '{activity}' 歌曲")
+                    logger.info(f"✅ RAG V2 搜索成功: {len(recommendations)} 首 '{activity}' 歌曲")
                     return recommendations
 
             except Exception as e:
-                logger.warning(f"RAG 搜索失败: {e}")
+                logger.warning(f"RAG V2 搜索失败: {e}")
 
             # ========== 第 2 层: Spotify 推荐 API (外部) ==========
             logger.info(f"RAG 无结果，使用 Spotify 推荐 '{activity}' 歌曲")

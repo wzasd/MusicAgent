@@ -223,17 +223,19 @@ class MusicJourneyService:
             else:
                 raise ValueError("必须提供 story 或 mood_transitions 之一")
             
-            # 2. 为每个阶段生成匹配的音乐
+            # 2. 为每个阶段生成匹配的音乐（共享 used_titles 避免跨段重复）
             segments = []
+            shared_context = dict(context or {})
+            shared_context["used_titles"] = set()
             for i, plan in enumerate(segments_plan):
                 logger.info(f"生成片段 {i+1}/{len(segments_plan)}: {plan['mood']}")
-                
+
                 songs = await self._generate_segment_songs(
                     mood=plan["mood"],
                     description=plan["description"],
                     duration=plan["duration"],
                     user_preferences=user_preferences,
-                    context=context
+                    context=shared_context
                 )
                 
                 segment = JourneySegment(
@@ -451,35 +453,41 @@ class MusicJourneyService:
             # 估算需要的歌曲数量（假设平均每首3-4分钟）
             target_songs = max(1, int(duration / 3.5))
 
-            # ========== 第 1 层: 本地 RAG 情绪搜索 (< 100ms) ==========
-            logger.info(f"使用 RAG 搜索 '{mood}' 情绪的歌曲")
+            # ========== 第 1 层: RAG V2 语义搜索 ==========
+            logger.info(f"使用 RAG V2 搜索 '{mood}' 情绪的歌曲")
+            used_titles = (context or {}).get("used_titles", set())
             try:
-                from tools.rag_music_search import get_rag_music_search
-                rag_search = get_rag_music_search()
+                from tools.rag_music_search_v2 import get_rag_music_search_v2
+                rag_search = get_rag_music_search_v2()
 
-                # 使用情绪搜索功能
-                rag_results = rag_search.search_by_mood(mood, top_k=target_songs * 2)
+                # 用情绪+描述组合查询，效果更好
+                query = f"{mood} {description}".strip()
+                rag_results = await rag_search.search_by_mood(mood, top_k=target_songs * 4)
+
+                # 过滤掉跨段重复歌曲
+                rag_results = [r for r in rag_results if r["title"].lower() not in used_titles]
 
                 if rag_results:
-                    # 转换为 Song 对象
                     rag_songs = []
-                    for result in rag_results:
+                    for result in rag_results[:target_songs]:
+                        gv = result.get("genre")
                         song = Song(
                             title=result.get("title", "Unknown"),
                             artist=result.get("artist", "Unknown Artist"),
                             album=result.get("album"),
-                            genre=result.get("genre") if isinstance(result.get("genre"), str) else None,
+                            genre=gv if isinstance(gv, str) else (gv[0] if gv else None),
                             year=result.get("year"),
                             duration=result.get("duration"),
                             popularity=int(result.get("similarity_score", 0.5) * 100)
                         )
                         rag_songs.append(song)
+                        used_titles.add(result["title"].lower())
 
-                    logger.info(f"✅ RAG 情绪搜索成功: {len(rag_songs)} 首 '{mood}' 歌曲")
-                    return rag_songs[:target_songs]
+                    logger.info(f"✅ RAG V2 搜索成功: {len(rag_songs)} 首 '{mood}' 歌曲")
+                    return rag_songs
 
             except Exception as e:
-                logger.warning(f"RAG 情绪搜索失败: {e}")
+                logger.warning(f"RAG V2 搜索失败: {e}")
 
             # ========== 第 2 层: 外部 API (RAG 无结果时) ==========
             logger.info(f"RAG 无结果，使用外部 API 搜索 '{mood}' 歌曲")
