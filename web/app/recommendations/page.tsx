@@ -6,7 +6,9 @@ import MainLayout from '@/components/Layout/MainLayout';
 import WelcomeScreen from '@/components/Content/WelcomeScreen';
 import ThinkingIndicator from '@/components/Content/ThinkingIndicator';
 import ResultsDisplay from '@/components/Content/ResultsDisplay';
-import { streamRecommendations, type SSEEvent } from '@/lib/api';
+import PerformanceMetrics from '@/components/Content/PerformanceMetrics';
+import AgentStatusPanel from '@/components/Content/AgentStatusPanel';
+import { streamRecommendations, type SSEEvent, type PerformanceMetrics as PerformanceMetricsType, type AgentStatusEvent } from '@/lib/api';
 
 export default function RecommendationsPage() {
   const [loading, setLoading] = useState(false);
@@ -14,6 +16,8 @@ export default function RecommendationsPage() {
   const [responseText, setResponseText] = useState<string>('');
   const [songs, setSongs] = useState<any[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [performanceMetrics, setPerformanceMetrics] = useState<PerformanceMetricsType | null>(null);
+  const [agentStatus, setAgentStatus] = useState<AgentStatusEvent | null>(null);
   const cancelRef = useRef<(() => void) | null>(null);
   const router = useRouter();
   const pathname = usePathname();
@@ -26,6 +30,8 @@ export default function RecommendationsPage() {
     setResponseText('');
     setSongs([]);
     setError(null);
+    setPerformanceMetrics(null);
+    setAgentStatus(null);
 
     if (cancelRef.current) {
       cancelRef.current();
@@ -62,6 +68,16 @@ export default function RecommendationsPage() {
           break;
         case 'recommendations_complete':
           setThinkingMessage('');
+          break;
+        case 'performance':
+          if (event.metrics) {
+            setPerformanceMetrics(event.metrics);
+          }
+          break;
+        case 'agent_status':
+          if (event.status) {
+            setAgentStatus(event.status);
+          }
           break;
         case 'complete':
           setLoading(false);
@@ -119,6 +135,8 @@ export default function RecommendationsPage() {
         </div>
       )}
       {hasResult && <ResultsDisplay response={responseText} songs={songs} />}
+      <AgentStatusPanel status={agentStatus} isVisible={loading || !!agentStatus} />
+      <PerformanceMetrics metrics={performanceMetrics} isVisible={!loading && !!performanceMetrics} />
     </MainLayout>
   );
 }

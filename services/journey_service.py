@@ -450,8 +450,40 @@ class MusicJourneyService:
         try:
             # 估算需要的歌曲数量（假设平均每首3-4分钟）
             target_songs = max(1, int(duration / 3.5))
-            
-            # 使用MCP适配器获取推荐
+
+            # ========== 第 1 层: 本地 RAG 情绪搜索 (< 100ms) ==========
+            logger.info(f"使用 RAG 搜索 '{mood}' 情绪的歌曲")
+            try:
+                from tools.rag_music_search import get_rag_music_search
+                rag_search = get_rag_music_search()
+
+                # 使用情绪搜索功能
+                rag_results = rag_search.search_by_mood(mood, top_k=target_songs * 2)
+
+                if rag_results:
+                    # 转换为 Song 对象
+                    rag_songs = []
+                    for result in rag_results:
+                        song = Song(
+                            title=result.get("title", "Unknown"),
+                            artist=result.get("artist", "Unknown Artist"),
+                            album=result.get("album"),
+                            genre=result.get("genre") if isinstance(result.get("genre"), str) else None,
+                            year=result.get("year"),
+                            duration=result.get("duration"),
+                            popularity=int(result.get("similarity_score", 0.5) * 100)
+                        )
+                        rag_songs.append(song)
+
+                    logger.info(f"✅ RAG 情绪搜索成功: {len(rag_songs)} 首 '{mood}' 歌曲")
+                    return rag_songs[:target_songs]
+
+            except Exception as e:
+                logger.warning(f"RAG 情绪搜索失败: {e}")
+
+            # ========== 第 2 层: 外部 API (RAG 无结果时) ==========
+            logger.info(f"RAG 无结果，使用外部 API 搜索 '{mood}' 歌曲")
+
             # 根据情绪映射到Spotify流派
             mood_to_genres = {
                 "开心": ["pop", "dance", "electronic"],
@@ -464,25 +496,27 @@ class MusicJourneyService:
                 "悲伤": ["acoustic", "sad", "indie", "mellow"],
                 "浪漫": ["acoustic", "pop", "r-n-b", "soul"],
             }
-            
+
             genres = mood_to_genres.get(mood, ["pop"])
-            
+
             # 获取推荐歌曲
             songs = await self.mcp_adapter.get_recommendations(
                 seed_genres=genres[:3],
-                limit=target_songs * 2  # 获取更多候选，后续可以筛选
+                limit=target_songs * 2
             )
-            
-            # 如果MCP返回为空，使用本地搜索工具
-            if not songs:
-                search_tool = self._get_search_tool()
-                # 尝试根据情绪搜索
-                query = f"{mood} {description}"
-                songs = await search_tool.search_songs(query, limit=target_songs)
-            
-            # 限制歌曲数量
+
+            if songs:
+                logger.info(f"✅ 外部 API 搜索成功: {len(songs)} 首 '{mood}' 歌曲")
+                return songs[:target_songs]
+
+            # ========== 第 3 层: 兜底 - 使用本地数据库 ==========
+            logger.info(f"外部 API 无结果，使用本地数据库搜索 '{mood}' 歌曲")
+            search_tool = self._get_search_tool()
+            query = f"{mood} {description}"
+            songs = await search_tool.search_songs(query, limit=target_songs)
+
             return songs[:target_songs]
-            
+
         except Exception as e:
             logger.error(f"生成片段歌曲失败: {str(e)}")
             return []

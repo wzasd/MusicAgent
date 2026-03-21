@@ -4,25 +4,140 @@
 
 import json
 import re
-from typing import Dict, Any
+import time
+import uuid
+from typing import Dict, Any, Optional, List
 
 from langgraph.graph import StateGraph, END
 from langgraph.graph.state import CompiledStateGraph
 
 from config.logging_config import get_logger
 from llms.siliconflow_llm import get_chat_model
-from schemas.music_state import MusicAgentState
+from schemas.music_state import MusicAgentState, AgentStatus, NodeExecutionInfo, TokenUsageInfo
 from tools.music_tools import get_music_search_tool, get_music_recommender
 from prompts.music_prompts import (
     MUSIC_INTENT_ANALYZER_PROMPT,
     MUSIC_RECOMMENDATION_EXPLAINER_PROMPT,
     MUSIC_CHAT_RESPONSE_PROMPT
 )
+from utils.performance_monitor import timed, get_current_timer
 
 logger = get_logger(__name__)
 
 # 延迟初始化 llm，避免在模块导入时配置未加载
 _llm = None
+
+
+# Agent 状态跟踪器
+class AgentStatusTracker:
+    """跟踪 Agent 执行状态"""
+
+    def __init__(self):
+        self.request_id = str(uuid.uuid4())[:8]
+        self.node_history: List[NodeExecutionInfo] = []
+        self.current_node: Optional[str] = None
+        self.start_time: Optional[float] = None
+        self.status = "idle"
+        self._node_order = [
+            "analyze_intent",
+            "search_songs",
+            "generate_recommendations",
+            "analyze_user_preferences",
+            "enhanced_recommendations",
+            "create_playlist",
+            "general_chat",
+            "generate_explanation",
+        ]
+
+    def start_request(self):
+        """开始新请求"""
+        self.start_time = time.time()
+        self.status = "running"
+        self.node_history = []
+        self.current_node = None
+
+    def node_start(self, node_name: str):
+        """记录节点开始"""
+        self.current_node = node_name
+        node_info: NodeExecutionInfo = {
+            "node_name": node_name,
+            "status": "running",
+            "start_time": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "end_time": None,
+            "duration_ms": None,
+            "error_message": None,
+        }
+        self.node_history.append(node_info)
+
+    def node_complete(self, node_name: str, error: Optional[str] = None):
+        """记录节点完成"""
+        for node in self.node_history:
+            if node["node_name"] == node_name and node["status"] == "running":
+                node["status"] = "failed" if error else "completed"
+                node["end_time"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+                if self.start_time:
+                    node["duration_ms"] = int((time.time() - self.start_time) * 1000)
+                if error:
+                    node["error_message"] = error
+                break
+
+    def get_status(self) -> AgentStatus:
+        """获取当前状态"""
+        elapsed_ms = None
+        if self.start_time:
+            elapsed_ms = int((time.time() - self.start_time) * 1000)
+
+        # 计算实际执行的节点数（去重，因为可能有重试）
+        executed_nodes = set()
+        for node in self.node_history:
+            if node["status"] in ["completed", "failed"]:
+                executed_nodes.add(node["node_name"])
+
+        # total_nodes 应该是实际会执行的节点数，而不是预定义的列表
+        # 根据当前工作流状态动态计算
+        current_workflow_nodes = self._estimate_workflow_nodes()
+
+        return {
+            "request_id": self.request_id,
+            "current_node": self.current_node,
+            "overall_status": self.status,
+            "nodes_executed": len(executed_nodes),
+            "total_nodes": current_workflow_nodes,
+            "node_history": self.node_history.copy(),
+            "elapsed_ms": elapsed_ms,
+        }
+
+    def _estimate_workflow_nodes(self) -> int:
+        """根据已执行的节点估算当前工作流的总节点数"""
+        if not self.node_history:
+            return 3  # 默认最小值: intent -> action -> explanation
+
+        # 获取已执行的节点类型
+        executed_types = set()
+        for node in self.node_history:
+            executed_types.add(node["node_name"])
+
+        # 基础节点: 意图分析 + 生成解释 = 2个
+        total = 2
+
+        # 根据已执行的动作节点判断中间步骤
+        action_nodes = executed_types - {"analyze_intent", "generate_explanation"}
+        total += len(action_nodes)
+
+        return max(total, 3)  # 至少3个节点
+
+    def complete(self):
+        """标记请求完成"""
+        self.status = "completed"
+        self.current_node = None
+
+    def fail(self):
+        """标记请求失败"""
+        self.status = "failed"
+
+
+# 全局状态跟踪器
+_status_tracker = AgentStatusTracker()
 
 def get_llm():
     """获取LLM实例（延迟初始化）"""
@@ -32,70 +147,204 @@ def get_llm():
     return _llm
 
 
+def get_agent_status_tracker() -> AgentStatusTracker:
+    """获取全局 Agent 状态跟踪器"""
+    global _status_tracker
+    return _status_tracker
+
+
+def _record_token_usage(response: Any, provider: str = "siliconflow"):
+    """记录 Token 使用量"""
+    timer = get_current_timer()
+    if timer and hasattr(response, "usage") and response.usage:
+        usage = response.usage
+        timer.record_tokens(
+            provider=provider,
+            prompt_tokens=getattr(usage, "prompt_tokens", 0),
+            completion_tokens=getattr(usage, "completion_tokens", 0),
+            total_tokens=getattr(usage, "total_tokens", 0),
+        )
+
+
 def _clean_json_from_llm(llm_output: str) -> str:
     """从LLM的输出中提取并清理JSON字符串"""
-    match = re.search(r"```(?:json)?(.*)```", llm_output, re.DOTALL)
+    # 首先尝试提取代码块中的内容
+    match = re.search(r"```(?:json)?(.*?)```", llm_output, re.DOTALL)
     if match:
         return match.group(1).strip()
-    return llm_output.strip()
+
+    # 如果没有代码块，尝试找到第一个完整的JSON对象
+    # 查找第一个 { 和匹配的 }
+    text = llm_output.strip()
+    start_idx = text.find('{')
+    if start_idx == -1:
+        return text
+
+    # 找到匹配的结束括号
+    brace_count = 0
+    end_idx = start_idx
+    for i, char in enumerate(text[start_idx:], start=start_idx):
+        if char == '{':
+            brace_count += 1
+        elif char == '}':
+            brace_count -= 1
+            if brace_count == 0:
+                end_idx = i + 1
+                break
+
+    return text[start_idx:end_idx]
+
+
+def _clean_search_query(query: str) -> str:
+    """
+    保守净化搜索词，去除常见前缀和后缀但不误伤歌曲名。
+    支持迭代清理，直到无法继续清理为止。
+    """
+    if not query or not isinstance(query, str):
+        return query
+
+    original = query.strip()
+    cleaned = original
+
+    # 定义所有需要移除的模式
+    prefix_patterns = [
+        # 歌词搜索前缀（必须在最前面优先处理）
+        r"^歌词[是里有]+[的]?[：:]?\s*",
+        # 给我/给我来 + 内容
+        r"^给我[来]?[的]?\s*",
+        # 我想/我要/我想找/我要找/帮我找/帮我搜
+        r"^(?:我想|我要|我想找|我要找|帮我找|帮我搜|给我来)[了]?[的]?\s*",
+        # 播放/放/听/搜索/搜/找 + 量词
+        r"^(?:播放|搜索|放|听|搜|找)[的]?[一]?[个首点些]?[的]?\s*",
+        # 推荐
+        r"^(?:推荐|荐)[的]?[一]?[个首点些]?[的]?\s*",
+        # 有没有/有
+        r"^(?:有没有|有)[的]?\s*",
+        # 来 + 量词
+        r"^来[一]?[个首点]?[的]?\s*",
+        # 适合
+        r"^适合\s*",
+        # 一些/一点
+        r"^(?:一些|一点)\s*",
+        # 量词开头
+        r"^[一首个点些]\s*",
+    ]
+
+    suffix_patterns = [
+        r"[,，.。！!？?]$",  # 末尾标点
+        r"[的吧吗呢呀啊]$",  # 语气词
+        r"[的]?歌$",  # "...的歌" 或 "...歌"
+        r"[的]?音乐$",  # "...的音乐"
+        r"[的]?曲子$",  # "...的曲子"
+        r"[的]?歌曲$",  # "...的歌曲"
+        r"时[听]?$",  # "...时" 或 "...时听"
+        r"^[一首个点些]$",  # 单独的量词
+    ]
+
+    # 迭代清理直到稳定
+    max_iterations = 10
+    for _ in range(max_iterations):
+        previous = cleaned
+
+        # 尝试去除前缀
+        for pattern in prefix_patterns:
+            match = re.match(pattern, cleaned)
+            if match:
+                extracted = cleaned[match.end():].strip()
+                if extracted and len(extracted) >= 2:
+                    cleaned = extracted
+                    break  # 一次只应用一个前缀
+
+        # 尝试去除后缀
+        for pattern in suffix_patterns:
+            match = re.search(pattern, cleaned)
+            if match and match.end() == len(cleaned):  # 确保是后缀
+                extracted = cleaned[:match.start()].strip()
+                if extracted and len(extracted) >= 2:
+                    cleaned = extracted
+                    break  # 一次只应用一个后缀
+
+        # 如果没有变化，停止迭代
+        if cleaned == previous:
+            break
+
+    # 最终校验
+    if len(cleaned) < 2:
+        return original
+
+    return cleaned
 
 
 class MusicRecommendationGraph:
     """音乐推荐工作流图"""
-    
+
     def __init__(self):
         self.workflow = self._build_graph()
-    
+        self._status_tracker = get_agent_status_tracker()
+
     def get_app(self) -> CompiledStateGraph:
         """获取编译后的应用"""
         return self.workflow
-    
+
+    @timed("analyze_intent")
     async def analyze_intent(self, state: MusicAgentState) -> Dict[str, Any]:
         """
         节点1: 分析用户意图
         识别用户想要做什么（搜索、推荐、聊天等）
         """
-        logger.info("--- [步骤 1] 分析用户意图 ---")
-        
+        node_name = "analyze_intent"
+        logger.info(f"--- [步骤 1] 分析用户意图 ---")
+        self._status_tracker.node_start(node_name)
+
         user_input = state.get("input", "")
-        
+
         try:
             # 调用LLM分析意图
             prompt = MUSIC_INTENT_ANALYZER_PROMPT.format(user_input=user_input)
             response = await get_llm().ainvoke(prompt)
-            
+
+            # 记录 Token 使用
+            _record_token_usage(response)
+
             # 解析JSON响应
             cleaned_json = _clean_json_from_llm(response.content)
             intent_data = json.loads(cleaned_json)
-            
+
             logger.info(f"识别到意图类型: {intent_data.get('intent_type')}")
-            
+
+            self._status_tracker.node_complete(node_name)
+
             return {
                 "intent_type": intent_data.get("intent_type", "general_chat"),
                 "intent_parameters": intent_data.get("parameters", {}),
                 "intent_context": intent_data.get("context", ""),
-                "step_count": state.get("step_count", 0) + 1
+                "step_count": state.get("step_count", 0) + 1,
+                "agent_status": self._status_tracker.get_status(),
             }
-            
+
         except json.JSONDecodeError as e:
             logger.error(f"解析意图JSON失败: {str(e)}")
+            self._status_tracker.node_complete(node_name, error=str(e))
             # 如果解析失败，默认为通用聊天
             return {
                 "intent_type": "general_chat",
                 "intent_parameters": {},
                 "intent_context": user_input,
                 "step_count": state.get("step_count", 0) + 1,
+                "agent_status": self._status_tracker.get_status(),
                 "error_log": state.get("error_log", []) + [
                     {"node": "analyze_intent", "error": "JSON解析失败"}
                 ]
             }
         except Exception as e:
             logger.error(f"意图分析失败: {str(e)}")
+            self._status_tracker.node_complete(node_name, error=str(e))
             return {
                 "intent_type": "general_chat",
                 "intent_parameters": {},
                 "intent_context": user_input,
                 "step_count": state.get("step_count", 0) + 1,
+                "agent_status": self._status_tracker.get_status(),
                 "error_log": state.get("error_log", []) + [
                     {"node": "analyze_intent", "error": str(e)}
                 ]
@@ -110,6 +359,8 @@ class MusicRecommendationGraph:
         
         if intent_type == "search":
             return "search_songs"
+        elif intent_type == "search_by_lyrics":
+            return "search_by_lyrics"
         elif intent_type.startswith("create_playlist"):
             # 创建歌单意图，先分析用户偏好
             return "analyze_user_preferences"
@@ -120,16 +371,21 @@ class MusicRecommendationGraph:
         else:
             return "general_chat"
     
+    @timed("search_songs")
     async def search_songs_node(self, state: MusicAgentState) -> Dict[str, Any]:
         """
         节点2a: 搜索歌曲
         """
-        logger.info("--- [步骤 2a] 搜索歌曲 ---")
-        
+        node_name = "search_songs"
+        logger.info(f"--- [步骤 2a] 搜索歌曲 ---")
+        self._status_tracker.node_start(node_name)
+
         parameters = state.get("intent_parameters", {})
         query = parameters.get("query", "")
+        # 应用保守的净化兜底
+        query = _clean_search_query(query)
         genre = parameters.get("genre")
-        
+
         try:
             # 执行搜索
             search_tool = get_music_search_tool()
@@ -138,54 +394,117 @@ class MusicRecommendationGraph:
                 genre=genre,
                 limit=10
             )
-            
+
             # 转换为字典格式
             search_results = [song.to_dict() for song in results]
-            
+
             logger.info(f"搜索到 {len(search_results)} 首歌曲")
-            
+
+            self._status_tracker.node_complete(node_name)
+
             return {
                 "search_results": search_results,
                 "recommendations": search_results[:5],  # 取前5首作为推荐
-                "step_count": state.get("step_count", 0) + 1
+                "step_count": state.get("step_count", 0) + 1,
+                "agent_status": self._status_tracker.get_status(),
             }
-            
+
         except Exception as e:
             logger.error(f"搜索歌曲失败: {str(e)}")
+            self._status_tracker.node_complete(node_name, error=str(e))
             return {
                 "search_results": [],
                 "recommendations": [],
                 "step_count": state.get("step_count", 0) + 1,
+                "agent_status": self._status_tracker.get_status(),
                 "error_log": state.get("error_log", []) + [
                     {"node": "search_songs", "error": str(e)}
                 ]
             }
-    
+
+    @timed("search_by_lyrics")
+    async def search_by_lyrics_node(self, state: MusicAgentState) -> Dict[str, Any]:
+        """
+        节点2a-lyrics: 根据歌词搜索歌曲
+        """
+        node_name = "search_by_lyrics"
+        logger.info(f"--- [步骤 2a-lyrics] 歌词搜索 ---")
+        self._status_tracker.node_start(node_name)
+
+        parameters = state.get("intent_parameters", {})
+        lyrics = parameters.get("lyrics", "")
+
+        try:
+            from tools.lyrics_search import get_lyrics_search_engine
+            lyrics_engine = get_lyrics_search_engine()
+
+            # 执行歌词搜索
+            results = lyrics_engine.search_by_lyrics(lyrics, top_k=10)
+
+            # 转换为字典格式
+            search_results = []
+            for result in results:
+                from tools.music_tools import Song
+                song = Song(
+                    title=result.get("title", "Unknown"),
+                    artist=result.get("artist", "Unknown Artist"),
+                    genre=result.get("genre", ["流行"]) if isinstance(result.get("genre"), list) else None,
+                    popularity=int(result.get("similarity_score", 0.8) * 100)
+                )
+                search_results.append(song.to_dict())
+
+            logger.info(f"歌词搜索到 {len(search_results)} 首歌曲")
+
+            self._status_tracker.node_complete(node_name)
+
+            return {
+                "search_results": search_results,
+                "recommendations": search_results[:5],
+                "step_count": state.get("step_count", 0) + 1,
+                "agent_status": self._status_tracker.get_status(),
+            }
+
+        except Exception as e:
+            logger.error(f"歌词搜索失败: {str(e)}")
+            self._status_tracker.node_complete(node_name, error=str(e))
+            return {
+                "search_results": [],
+                "recommendations": [],
+                "step_count": state.get("step_count", 0) + 1,
+                "agent_status": self._status_tracker.get_status(),
+                "error_log": state.get("error_log", []) + [
+                    {"node": "search_by_lyrics", "error": str(e)}
+                ]
+            }
+
+    @timed("generate_recommendations")
     async def generate_recommendations_node(self, state: MusicAgentState) -> Dict[str, Any]:
         """
         节点2b: 生成推荐
         根据不同的意图类型调用不同的推荐方法
         """
+        node_name = "generate_recommendations"
         logger.info("--- [步骤 2b] 生成音乐推荐 ---")
-        
+        self._status_tracker.node_start(node_name)
+
         intent_type = state.get("intent_type")
         parameters = state.get("intent_parameters", {})
-        
+
         try:
             recommender = get_music_recommender()
             search_tool = get_music_search_tool()
             recommendations = []
-            
+
             if intent_type == "recommend_by_mood":
                 mood = parameters.get("mood", "开心")
                 recs = await recommender.recommend_by_mood(mood, limit=5)
                 recommendations = [rec.to_dict() for rec in recs]
-                
+
             elif intent_type == "recommend_by_activity":
                 activity = parameters.get("activity", "放松")
                 recs = await recommender.recommend_by_activity(activity, limit=5)
                 recommendations = [rec.to_dict() for rec in recs]
-                
+
             elif intent_type == "recommend_by_genre":
                 genre = parameters.get("genre", "流行")
                 songs = await search_tool.get_songs_by_genre(genre, limit=5)
@@ -195,7 +514,7 @@ class MusicRecommendationGraph:
                     "reason": f"这是一首优秀的{genre}作品",
                     "similarity_score": 0.85
                 } for song in songs]
-                
+
             elif intent_type == "recommend_by_artist":
                 artist = parameters.get("artist", "")
                 songs = await search_tool.get_songs_by_artist(artist, limit=5)
@@ -204,78 +523,98 @@ class MusicRecommendationGraph:
                     "reason": f"{artist}的经典作品",
                     "similarity_score": 0.9
                 } for song in songs]
-                
+
             elif intent_type == "recommend_by_favorites":
                 favorite_songs = parameters.get("favorite_songs", [])
                 if favorite_songs:
                     recs = await recommender.recommend_by_favorites(favorite_songs, limit=5)
                     recommendations = [rec.to_dict() for rec in recs]
-            
+
             logger.info(f"生成了 {len(recommendations)} 条推荐")
-            
+
+            self._status_tracker.node_complete(node_name)
+
             return {
                 "recommendations": recommendations,
-                "step_count": state.get("step_count", 0) + 1
+                "step_count": state.get("step_count", 0) + 1,
+                "agent_status": self._status_tracker.get_status(),
             }
-            
+
         except Exception as e:
             logger.error(f"生成推荐失败: {str(e)}")
+            self._status_tracker.node_complete(node_name, error=str(e))
             return {
                 "recommendations": [],
                 "step_count": state.get("step_count", 0) + 1,
+                "agent_status": self._status_tracker.get_status(),
                 "error_log": state.get("error_log", []) + [
                     {"node": "generate_recommendations", "error": str(e)}
                 ]
             }
     
+    @timed("general_chat")
     async def general_chat_node(self, state: MusicAgentState) -> Dict[str, Any]:
         """
         节点2c: 通用聊天
         处理一般性的音乐话题聊天
         """
+        node_name = "general_chat"
         logger.info("--- [步骤 2c] 通用音乐聊天 ---")
-        
+        self._status_tracker.node_start(node_name)
+
         user_message = state.get("input", "")
         chat_history = state.get("chat_history", [])
-        
+
         try:
             # 格式化对话历史
             history_text = "\n".join([
                 f"{msg.get('role', 'user')}: {msg.get('content', '')}"
                 for msg in chat_history[-5:]  # 只取最近5条
             ])
-            
+
             # 调用LLM生成回复
             prompt = MUSIC_CHAT_RESPONSE_PROMPT.format(
                 chat_history=history_text,
                 user_message=user_message
             )
             response = await get_llm().ainvoke(prompt)
-            
+
+            # 记录 Token 使用
+            _record_token_usage(response)
+
             logger.info("生成聊天回复")
-            
+
+            self._status_tracker.node_complete(node_name)
+
             return {
                 "final_response": response.content,
-                "step_count": state.get("step_count", 0) + 1
+                "step_count": state.get("step_count", 0) + 1,
+                "agent_status": self._status_tracker.get_status(),
             }
-            
+
         except Exception as e:
             logger.error(f"生成聊天回复失败: {str(e)}")
+            self._status_tracker.node_complete(node_name, error=str(e))
             return {
                 "final_response": "抱歉，我现在遇到了一些问题。不过我很乐意和你聊音乐！你可以告诉我你喜欢什么类型的音乐吗？",
                 "step_count": state.get("step_count", 0) + 1,
+                "agent_status": self._status_tracker.get_status(),
                 "error_log": state.get("error_log", []) + [
                     {"node": "general_chat", "error": str(e)}
                 ]
             }
     
+    @timed("generate_explanation")
     async def generate_explanation(self, state: MusicAgentState) -> Dict[str, Any]:
         """
         节点3: 生成推荐解释
         为搜索结果或推荐结果生成友好的解释文本
         """
+        node_name = "generate_explanation"
         logger.info("--- [步骤 3] 生成推荐解释 ---")
-        
+        self._status_tracker.node_start(node_name)
+        self._status_tracker.complete()
+
         recommendations = state.get("recommendations", [])
         user_query = state.get("input", "")
         
@@ -320,15 +659,21 @@ class MusicRecommendationGraph:
             final_response = f"{explanation}\n\n推荐歌曲：\n{songs_text}{playlist_text}"
             
             logger.info("成功生成推荐解释")
-            
+
+            self._status_tracker.node_complete(node_name)
+            self._status_tracker.complete()
+
             return {
                 "explanation": explanation,
                 "final_response": final_response,
-                "step_count": state.get("step_count", 0) + 1
+                "step_count": state.get("step_count", 0) + 1,
+                "agent_status": self._status_tracker.get_status(),
             }
-            
+
         except Exception as e:
             logger.error(f"生成解释失败: {str(e)}")
+            self._status_tracker.node_complete(node_name, error=str(e))
+            self._status_tracker.fail()
             
             # 生成简单的备用回复
             songs_list = "\n".join([
@@ -340,6 +685,7 @@ class MusicRecommendationGraph:
                 "explanation": "为你找到了以下歌曲：",
                 "final_response": f"为你找到了以下歌曲：\n\n{songs_list}",
                 "step_count": state.get("step_count", 0) + 1,
+                "agent_status": self._status_tracker.get_status(),
                 "error_log": state.get("error_log", []) + [
                     {"node": "generate_explanation", "error": str(e)}
                 ]
@@ -634,6 +980,7 @@ class MusicRecommendationGraph:
         # 添加节点
         workflow.add_node("analyze_intent", self.analyze_intent)
         workflow.add_node("search_songs", self.search_songs_node)
+        workflow.add_node("search_by_lyrics", self.search_by_lyrics_node)  # 歌词搜索
         workflow.add_node("generate_recommendations", self.generate_recommendations_node)
         workflow.add_node("analyze_user_preferences", self.analyze_user_preferences_node)  # ⭐ NEW
         workflow.add_node("enhanced_recommendations", self.enhanced_recommendations_node)  # ⭐ NEW
@@ -650,6 +997,7 @@ class MusicRecommendationGraph:
             self.route_by_intent,
             {
                 "search_songs": "search_songs",
+                "search_by_lyrics": "search_by_lyrics",  # 歌词搜索
                 "generate_recommendations": "generate_recommendations",
                 "analyze_user_preferences": "analyze_user_preferences",  # ⭐ NEW
                 "general_chat": "general_chat"
@@ -678,6 +1026,7 @@ class MusicRecommendationGraph:
         
         # 搜索和推荐后生成解释
         workflow.add_edge("search_songs", "generate_explanation")
+        workflow.add_edge("search_by_lyrics", "generate_explanation")  # 歌词搜索后生成解释
         workflow.add_edge("generate_recommendations", "generate_explanation")
         
         # 创建播放列表后生成解释

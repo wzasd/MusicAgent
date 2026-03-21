@@ -2,35 +2,48 @@
 音乐推荐Agent的提示词模板
 """
 
-# 用户意图分析提示词
-MUSIC_INTENT_ANALYZER_PROMPT = """你是一个专业的音乐推荐助手，负责分析用户的音乐需求。
+# 用户意图分析提示词 (Few-shot 版本)
+MUSIC_INTENT_ANALYZER_PROMPT = """你是一个专业的音乐需求分析助手。从用户输入中提取核心意图和参数，去除所有冗余词汇。
 
-用户输入：{user_input}
+【示例】
 
-请分析用户的需求，提取以下信息并以JSON格式返回：
-1. intent_type: 意图类型（search/recommend_by_mood/recommend_by_genre/recommend_by_artist/recommend_by_favorites/recommend_by_activity/general_chat）
-2. parameters: 相关参数
-   - 如果是search：提取 query（搜索词）、genre（流派，可选）
-   - 如果是recommend_by_mood：提取 mood（心情）
-   - 如果是recommend_by_genre：提取 genre（流派）
-   - 如果是recommend_by_artist：提取 artist（艺术家）
-   - 如果是recommend_by_favorites：提取 favorite_songs（喜欢的歌曲列表）
-   - 如果是recommend_by_activity：提取 activity（活动场景）
-3. context: 用户提供的额外上下文信息
+输入: "我想听周杰伦的晴天"
+输出: {{"intent_type": "search", "parameters": {{"query": "周杰伦 晴天"}}, "context": "用户想听特定歌曲"}}
 
-输出格式示例：
-```json
-{{
-    "intent_type": "recommend_by_mood",
-    "parameters": {{
-        "mood": "开心"
-    }},
-    "context": "用户想要听一些快乐的音乐"
-}}
-```
+输入: "播放一些开心的音乐"
+输出: {{"intent_type": "recommend_by_mood", "parameters": {{"mood": "开心"}}, "context": "用户想听开心的音乐"}}
 
-请严格按照JSON格式输出，不要包含其他内容。
-"""
+输入: "推荐适合跑步的歌"
+输出: {{"intent_type": "recommend_by_activity", "parameters": {{"activity": "跑步"}}, "context": "用户运动时听歌"}}
+
+输入: "来首民谣吧"
+输出: {{"intent_type": "recommend_by_genre", "parameters": {{"genre": "民谣"}}, "context": "用户想听民谣风格"}}
+
+输入: "最近心情不好，想听点治愈的歌"
+输出: {{"intent_type": "recommend_by_mood", "parameters": {{"mood": "治愈"}}, "context": "用户情绪低落，需要治愈系音乐"}}
+
+输入: "找一下刘德华的歌"
+输出: {{"intent_type": "recommend_by_artist", "parameters": {{"artist": "刘德华"}}, "context": "用户想听特定艺术家的歌曲"}}
+
+输入: "我想听《想你的夜》"
+输出: {{"intent_type": "search", "parameters": {{"query": "想你的夜"}}, "context": "用户想听特定歌曲"}}
+
+输入: "歌词是后来终于在眼泪中明白"
+输出: {{"intent_type": "search_by_lyrics", "parameters": {{"lyrics": "后来终于在眼泪中明白"}}, "context": "用户通过歌词片段找歌"}}
+
+输入: "有首歌歌词是燃烧我的卡路里，是什么歌？"
+输出: {{"intent_type": "search_by_lyrics", "parameters": {{"lyrics": "燃烧我的卡路里"}}, "context": "用户通过歌词片段找歌"}}
+
+【规则】
+1. intent_type 只能是以下之一：search, search_by_lyrics, recommend_by_mood, recommend_by_genre, recommend_by_artist, recommend_by_favorites, recommend_by_activity, general_chat
+2. parameters 中只保留核心关键词，去除所有前缀（我想听、播放、搜索、找、来、推荐等）和修饰词（一些、一首、点、适合等）
+3. 歌曲名/艺术家名保持原样，不要添加书名号或其他符号
+4. 歌词搜索：当用户提到"歌词是xxx"、"歌词里有xxx"、"有首歌歌词是xxx"时，intent_type 为 "search_by_lyrics"，parameters 中保留 "lyrics" 字段，值为提取出的歌词片段（去除"歌词是"、"歌词里有"等前缀）
+
+【现在分析】
+输入: {user_input}
+
+重要：只返回纯JSON，不要包含任何其他文字、说明或格式标记（如 ```json）："""
 
 # 音乐推荐解释生成提示词
 MUSIC_RECOMMENDATION_EXPLAINER_PROMPT = """你是一个专业的音乐推荐助手，需要为用户生成友好、个性化的推荐解释。

@@ -1,5 +1,5 @@
 /**
- * Next.js API路由：音乐推荐流式接口（SSE代理）
+ * Next.js API路由：音乐搜索接口
  */
 
 import { NextRequest } from 'next/server';
@@ -10,8 +10,7 @@ export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
 
-    // 转发请求到后端FastAPI服务器
-    const response = await fetch(`${API_BASE_URL}/api/recommendations/stream`, {
+    const response = await fetch(`${API_BASE_URL}/api/search`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -23,17 +22,14 @@ export async function POST(request: NextRequest) {
       throw new Error(`Backend responded with status: ${response.status}`);
     }
 
-    // 返回流式响应
-    return new Response(response.body, {
+    const data = await response.json();
+    return new Response(JSON.stringify(data), {
       headers: {
-        'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache',
-        'Connection': 'keep-alive',
-        'X-Accel-Buffering': 'no',
+        'Content-Type': 'application/json',
       },
     });
   } catch (error) {
-    console.error('SSE proxy error:', error);
+    console.error('Search proxy error:', error);
     return new Response(
       JSON.stringify({ error: 'Failed to connect to backend' }),
       {
@@ -49,32 +45,28 @@ export async function GET(request: NextRequest) {
     const { searchParams } = new URL(request.url);
     const query = searchParams.get('query') || '';
     const genre = searchParams.get('genre') || undefined;
-    const mood = searchParams.get('mood') || undefined;
+    const limit = parseInt(searchParams.get('limit') || '20', 10);
 
-    // 转发请求到后端FastAPI服务器
-    const response = await fetch(`${API_BASE_URL}/api/recommendations/stream`, {
+    const response = await fetch(`${API_BASE_URL}/api/search`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ query, genre, mood }),
+      body: JSON.stringify({ query, genre, limit }),
     });
 
     if (!response.ok) {
       throw new Error(`Backend responded with status: ${response.status}`);
     }
 
-    // 返回流式响应
-    return new Response(response.body, {
+    const data = await response.json();
+    return new Response(JSON.stringify(data), {
       headers: {
-        'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache',
-        'Connection': 'keep-alive',
-        'X-Accel-Buffering': 'no',
+        'Content-Type': 'application/json',
       },
     });
   } catch (error) {
-    console.error('SSE proxy error:', error);
+    console.error('Search proxy error:', error);
     return new Response(
       JSON.stringify({ error: 'Failed to connect to backend' }),
       {
@@ -84,4 +76,3 @@ export async function GET(request: NextRequest) {
     );
   }
 }
-

@@ -19,6 +19,7 @@ except Exception as e:
     print(f"警告: 无法从 setting.json 加载配置: {e}")
 
 from config.logging_config import get_logger
+from utils.performance_monitor import timed
 
 logger = get_logger(__name__)
 
@@ -117,10 +118,16 @@ class MusicSearchTool:
             # 读取JSON文件
             with open(json_path, 'r', encoding='utf-8') as f:
                 music_data = json.load(f)
-            
+
+            # 处理两种格式: 直接列表 或 包含 songs 键的对象
+            if isinstance(music_data, dict):
+                songs_data = music_data.get("songs", [])
+            else:
+                songs_data = music_data
+
             # 转换为Song对象
             songs = []
-            for item in music_data:
+            for item in songs_data:
                 song = Song(
                     title=item.get("title", ""),
                     artist=item.get("artist", ""),
@@ -145,6 +152,7 @@ class MusicSearchTool:
             self.session = aiohttp.ClientSession()
         return self.session
     
+    @timed("tailyapi_search")
     async def _search_songs_with_tailyapi(
         self,
         query: str,
@@ -152,7 +160,7 @@ class MusicSearchTool:
     ) -> List[Song]:
         """
         使用 tailyapi (Tavily API) 从网上搜索歌曲
-        
+
         Args:
             query: 搜索关键词（歌曲名或艺术家）
             limit: 返回结果数量
@@ -204,26 +212,35 @@ class MusicSearchTool:
                 # 解析搜索结果
                 songs = []
                 results = data.get("results", [])
-                
-                for result in results[:limit * 2]:
+
+                # 如果 Tavily 返回了 answer，尝试从中提取歌曲
+                answer = data.get("answer", "")
+                if answer:
+                    # 尝试从 answer 中提取歌曲列表
+                    answer_songs = self._extract_songs_from_answer(answer, query)
+                    songs.extend(answer_songs)
+
+                # 从搜索结果中提取
+                for result in results[:limit * 3]:
                     title = result.get("title", "")
                     content = result.get("content", "")
                     url_link = result.get("url", "")
-                    
+
                     # 尝试从标题和内容中提取歌曲信息
-                    # 这里使用简单的正则或字符串匹配来提取歌曲名和艺术家
                     song_info = self._extract_song_info_from_text(title + " " + content, query)
-                    
-                    if song_info:
+
+                    if song_info and song_info.get("title"):
                         song = Song(
-                            title=song_info.get("title", query),
-                            artist=song_info.get("artist", "未知"),
-                            album=song_info.get("album"),
+                            title=song_info.get("title", query)[:100],  # 限制长度
+                            artist=song_info.get("artist", "未知")[:50],
+                            album=song_info.get("album", ""),
                             genre=song_info.get("genre"),
                             preview_url=url_link,
                             popularity=song_info.get("popularity", 50)
                         )
                         songs.append(song)
+                        if len(songs) >= limit * 2:
+                            break
                 
                 # 去重（基于标题和艺术家）
                 unique_songs = []
@@ -240,85 +257,268 @@ class MusicSearchTool:
         except Exception as e:
             logger.error(f"使用 TailyAPI 搜索歌曲失败: {str(e)}", exc_info=True)
             return []
-    
-    def _extract_song_info_from_text(self, text: str, query: str) -> Optional[Dict[str, Any]]:
-        """
-        从文本中提取歌曲信息
-        
-        Args:
-            text: 包含歌曲信息的文本
-            query: 原始搜索查询
-            
-        Returns:
-            歌曲信息字典
-        """
+
+    def _is_valid_song_title(self, title: str) -> bool:
+        """验证标题是否是合法的歌曲名"""
         import re
-        
+        if not title or len(title) < 2 or len(title) > 60:
+            return False
+        invalid_words = ['http', 'www', '.com', '.cn', '下载', '试听', '歌词', 'mv', '视频',
+                        '微博', '抖音', 'b站', 'bilibili', '知乎', '百度', '腾讯', '网易',
+                        'qq音乐', '网易云', '酷狗', '酷我', 'wikipedia', 'youtube',
+                        'home', 'index', 'page', 'search', 'login', 'blog', 'news',
+                        '点击', '查看', '阅读', '评论', '分享', '完整版', '现场版', 'live版']
+        title_lower = title.lower()
+        for word in invalid_words:
+            if word in title_lower:
+                return False
+        if title.isdigit() or '/' in title or '\\' in title:
+            return False
+        return True
+
+    def _clean_title(self, title: str) -> str:
+        """清理标题，移除常见的前缀和后缀"""
+        import re
+        prefixes = [r'^\d+\.\s*', r'^\d+\)\s*', r'^[-•·\s]+', r'^(歌曲|音乐|歌名)\s*[:：]\s*']
+        for prefix in prefixes:
+            title = re.sub(prefix, '', title, flags=re.IGNORECASE)
+        suffixes = [r'\s*[\|｜].*$', r'\s*[-—]\s*(?:网易|QQ|酷狗|抖音|微博).*$',
+                   r'\s*[【\[\(（].*?[】\]\)）].*$', r'\s*[-—]\s*(?:官方|正式|完整|现场|live|mv|版).*$']
+        for suffix in suffixes:
+            title = re.sub(suffix, '', title, flags=re.IGNORECASE)
+        return title.strip()
+
+    def _extract_song_info_from_text(self, text: str, query: str) -> Optional[Dict[str, Any]]:
+        """从文本中提取歌曲信息 - 严格过滤版"""
+        import re
         try:
-            # 尝试匹配常见的歌曲信息格式
-            # 例如: "歌曲名 - 艺术家" 或 "艺术家 - 歌曲名"
+            text = re.sub(r'\s+', ' ', text).strip()
             patterns = [
-                r'(.+?)\s*[-–—]\s*(.+)',  # "歌曲 - 艺术家" 或 "艺术家 - 歌曲"
-                r'(.+?)\s*《(.+?)》',  # "艺术家《歌曲》"
-                r'《(.+?)》\s*(.+)',  # "《歌曲》艺术家"
+                (r'《(.+?)》[\s——]+(.+?)(?:\s*[,\(\[\|]|$)', 'bracket'),
+                (r'"(.+?)"[\s——]+(.+?)(?:\s*[,\(\[\|]|$)', 'quote'),
+                (r"'(.+?)'[\s——]+(.+?)(?:\s*[,\(\[\|]|$)", 'quote2'),
             ]
-            
-            for pattern in patterns:
+            for pattern, ptype in patterns:
                 match = re.search(pattern, text)
                 if match:
                     groups = match.groups()
                     if len(groups) >= 2:
-                        # 判断哪个是歌曲名，哪个是艺术家
-                        # 通常查询词更可能是歌曲名
-                        title = groups[0].strip()
-                        artist = groups[1].strip()
-                        
-                        # 如果查询词在第一个位置，可能是 "歌曲 - 艺术家"
-                        if query.lower() in title.lower():
-                            return {
-                                "title": title,
-                                "artist": artist,
-                                "popularity": 60
-                            }
-                        # 否则可能是 "艺术家 - 歌曲"
-                        elif query.lower() in artist.lower():
-                            return {
-                                "title": artist,
-                                "artist": title,
-                                "popularity": 60
-                            }
-            
-            # 如果无法解析，使用查询词作为歌曲名
-            return {
-                "title": query,
-                "artist": "未知",
-                "popularity": 50
-            }
-            
+                        title = self._clean_title(groups[0].strip())
+                        artist = self._clean_title(groups[1].strip())
+                        if not self._is_valid_song_title(title):
+                            continue
+                        if len(artist) > 30 or len(artist) < 1:
+                            artist = "未知"
+                        return {"title": title[:60], "artist": artist[:30], "popularity": 60}
+            single_patterns = [r'《(.+?)》', r'"(.+?)"', r"'(.+?)'"]
+            for pattern in single_patterns:
+                match = re.search(pattern, text)
+                if match:
+                    title = self._clean_title(match.group(1).strip())
+                    if self._is_valid_song_title(title):
+                        return {"title": title[:60], "artist": "未知", "popularity": 50}
+            return None
         except Exception as e:
             logger.warning(f"提取歌曲信息失败: {str(e)}")
             return None
+
+    def _extract_songs_from_answer(self, answer: str, query: str) -> List[Song]:
+        """
+        从 Tavily 的 answer 中提取歌曲列表
+        """
+        import re
+        songs = []
+        try:
+            # 尝试匹配数字列表格式的歌曲
+            # 例如: "1. 歌曲名 - 艺术家" 或 "1. 艺术家 - 歌曲名"
+            pattern = r'(?:^|\n)\s*\d+\.\s*(.+?)(?:\n|$)'
+            matches = re.findall(pattern, answer, re.MULTILINE)
+
+            for match in matches:
+                # 尝试分割歌曲名和艺术家
+                if ' - ' in match or ' – ' in match or ' — ' in match:
+                    parts = re.split(r'\s*[-–—]\s*', match, maxsplit=1)
+                    if len(parts) >= 2:
+                        title = parts[0].strip()
+                        artist = parts[1].strip()
+                        # 清理可能的后缀
+                        artist = re.split(r'[,(\[]', artist)[0].strip()
+                        songs.append(Song(
+                            title=title[:100],
+                            artist=artist[:50],
+                            popularity=70
+                        ))
+                else:
+                    # 如果没有分隔符，整个作为歌曲名
+                    songs.append(Song(
+                        title=match.strip()[:100],
+                        artist="未知",
+                        popularity=50
+                    ))
+        except Exception as e:
+            logger.warning(f"从 answer 提取歌曲失败: {str(e)}")
+
+        return songs
+
     
+    @timed("music_search")
     async def search_songs(
-        self, 
-        query: str, 
+        self,
+        query: str,
         genre: Optional[str] = None,
-        limit: int = 10
+        limit: int = 10,
+        use_rag_first: bool = True,
+        is_lyrics: bool = False
     ) -> List[Song]:
         """
-        搜索歌曲，优先使用 Spotify (MCP)，失败或无结果时自动回退到 TailyAPI 和本地数据库。
-        
+        搜索歌曲（简化接口，向后兼容）
+        """
+        result = await self.search_songs_with_steps(query, genre, limit, use_rag_first, is_lyrics=is_lyrics)
+        return result["songs"]
+
+    async def search_songs_with_steps(
+        self,
+        query: str,
+        genre: Optional[str] = None,
+        limit: int = 10,
+        use_rag_first: bool = True,
+        is_lyrics: bool = False
+    ) -> Dict[str, Any]:
+        """
+        搜索歌曲，返回详细步骤信息（用于日志记录）。
+
         Args:
             query: 搜索关键词（歌曲名或艺术家）
-            genre: 音乐流派过滤（注意：Spotify 搜索不支持流派过滤，会在结果中过滤）
+            genre: 音乐流派过滤
             limit: 返回结果数量
-            
-        Returns:
-            歌曲列表
-        """
-        logger.info(f"搜索音乐: query='{query}', genre='{genre}', limit={limit}")
+            use_rag_first: 是否优先使用 RAG（默认 True，时延 < 100ms）
 
-        # 1) 优先尝试 Spotify via MCP
+        Returns:
+            {"songs": List[Song], "steps": List[Dict], "total_elapsed_ms": float}
+        """
+        import time
+        steps = []
+        total_start = time.time()
+
+        def add_step(name: str, status: str, details: Dict = None):
+            step = {
+                "step_name": name,
+                "status": status,
+                "elapsed_ms": round((time.time() - total_start) * 1000, 2),
+                "details": details or {}
+            }
+            steps.append(step)
+
+        logger.info(f"搜索音乐: query='{query}', genre='{genre}', limit={limit}, use_rag_first={use_rag_first}")
+
+        final_songs = []
+        final_source = "none"
+
+        # ========== 第 0 层: 歌词搜索 (严格判断，只有明确的歌词查询才走这里) ==========
+        step0_start = time.time()
+        is_lyrics_mode = False
+        try:
+            from tools.lyrics_search import get_lyrics_search_engine
+            lyrics_engine = get_lyrics_search_engine()
+
+            if is_lyrics or lyrics_engine.is_lyrics_query(query):
+                is_lyrics_mode = True
+                logger.info(f"【歌词维度】识别为歌词搜索: '{query}'")
+                lyrics_results = lyrics_engine.search_by_lyrics(query, top_k=limit)
+
+                if lyrics_results:
+                    # 转换为 Song 对象
+                    lyrics_songs = []
+                    for result in lyrics_results:
+                        song = Song(
+                            title=result.get("title", "Unknown"),
+                            artist=result.get("artist", "Unknown Artist"),
+                            genre=result.get("genre", ["流行"]) if isinstance(result.get("genre"), list) else None,
+                            popularity=int(result.get("similarity_score", 0.8) * 100)
+                        )
+                        lyrics_songs.append(song)
+
+                    elapsed = (time.time() - step0_start) * 1000
+                    add_step("歌词搜索", "success", {"count": len(lyrics_songs), "elapsed_ms": round(elapsed, 2)})
+                    logger.info(f"✅ 【歌词维度】搜索成功: {len(lyrics_songs)} 首歌曲")
+                    final_songs = lyrics_songs[:limit]
+                    final_source = "lyrics_db"
+                    return {"songs": final_songs, "steps": steps, "total_elapsed_ms": round((time.time() - total_start) * 1000, 2), "source": "lyrics_db"}
+                else:
+                    elapsed = (time.time() - step0_start) * 1000
+                    add_step("歌词搜索", "fallback", {"reason": "no_match", "elapsed_ms": round(elapsed, 2)})
+                    logger.info("【歌词维度】无结果，尝试歌名搜索...")
+                    # 歌词数据库未匹配，提取纯歌词内容用于后续搜索
+                    query = lyrics_engine.extract_lyrics_content(query)
+                    logger.info(f"歌词提取后用于后续搜索: '{query}'")
+        except Exception as e:
+            elapsed = (time.time() - step0_start) * 1000
+            add_step("歌词搜索", "error", {"error": str(e), "elapsed_ms": round(elapsed, 2)})
+            logger.warning(f"【歌词维度】搜索失败: {e}")
+
+        # ========== 第 1 层: RAG 本地向量搜索 (歌名/艺术家维度) ==========
+        if use_rag_first:
+            try:
+                from tools.rag_music_search import get_rag_music_search
+                rag_search = get_rag_music_search()
+
+                # 构建搜索查询（结合流派）
+                search_query = f"{query} {genre}" if genre else query
+
+                # 执行 RAG 搜索
+                rag_results = rag_search.search(search_query, top_k=limit)
+
+                if rag_results:
+                    # 评估 RAG 结果质量：检查最高相似度分数
+                    max_similarity = max(r.get("similarity_score", 0) for r in rag_results)
+
+                    # 根据查询类型设定不同的质量阈值
+                    # 使用混合匹配后，字面匹配可达 0.9+，降低阈值确保有效结果不被过滤
+                    is_specific_query = len(query) <= 10 and not any(c in query for c in ["感觉", "心情", "适合", "推荐"])
+                    similarity_threshold = 0.5 if is_specific_query else 0.3
+
+                    if max_similarity >= similarity_threshold:
+                        # RAG 结果质量足够，转换为 Song 对象返回
+                        rag_songs = []
+                        for result in rag_results:
+                            # 处理 genre 字段（可能是列表或字符串）
+                            genre = result.get("genre")
+                            if isinstance(genre, list) and genre:
+                                genre = genre[0]  # 取第一个流派
+                            elif not isinstance(genre, str):
+                                genre = None
+
+                            song = Song(
+                                title=result.get("title", "Unknown"),
+                                artist=result.get("artist", "Unknown Artist"),
+                                album=result.get("album"),
+                                genre=genre,
+                                year=result.get("year"),
+                                duration=result.get("duration"),
+                                popularity=int(result.get("similarity_score", 0.5) * 100)
+                            )
+                            rag_songs.append(song)
+
+                        logger.info(f"✅ RAG 本地搜索成功: {len(rag_songs)} 首歌曲, 最高相似度={max_similarity:.2f} (时延 < 100ms)")
+                        elapsed = (time.time() - step0_start) * 1000
+                        add_step("RAG搜索", "success", {"count": len(rag_songs), "max_similarity": max_similarity, "elapsed_ms": round(elapsed, 2)})
+                        return {"songs": rag_songs[:limit], "steps": steps, "total_elapsed_ms": round((time.time() - total_start) * 1000, 2), "source": "rag"}
+                    else:
+                        # RAG 结果质量不够，fallback 到外部 API
+                        elapsed = (time.time() - step0_start) * 1000
+                        add_step("RAG搜索", "fallback", {"reason": f"低相似度 {max_similarity:.2f} < {similarity_threshold}", "elapsed_ms": round(elapsed, 2)})
+                        logger.info(f"⚠️ RAG 搜索结果质量不足 (最高相似度={max_similarity:.2f} < {similarity_threshold}), 将使用外部 API")
+                else:
+                    elapsed = (time.time() - step0_start) * 1000
+                    add_step("RAG搜索", "fallback", {"reason": "无结果", "elapsed_ms": round(elapsed, 2)})
+                    logger.info("RAG 无结果，准备回退到外部 API")
+
+            except Exception as e:
+                elapsed = (time.time() - step0_start) * 1000
+                add_step("RAG搜索", "error", {"error": str(e), "elapsed_ms": round(elapsed, 2)})
+                logger.warning(f"RAG 搜索失败: {e}，准备回退到外部 API")
+
+        # ========== 第 2 层: Spotify via MCP (时延 1-5s) ==========
         try:
             if self.mcp_adapter is not None:
                 spotify_results = await self.mcp_adapter.search_tracks(query, limit=limit * 2)
@@ -329,10 +529,11 @@ class MusicSearchTool:
             spotify_results = []
 
         if spotify_results:
-            logger.info(f"从 Spotify 找到 {len(spotify_results)} 首歌曲")
-            return spotify_results[:limit]
+            logger.info(f"✅ Spotify 搜索成功: {len(spotify_results)} 首歌曲")
+            add_step("Spotify搜索", "success", {"count": len(spotify_results)})
+            return {"songs": spotify_results[:limit], "steps": steps, "total_elapsed_ms": round((time.time() - total_start) * 1000, 2), "source": "spotify"}
 
-        # 2) Spotify 无结果或不可用 → 尝试 TailyAPI 在线搜索
+        # ========== 第 3 层: TailyAPI 在线搜索 (时延 3-10s) ==========
         logger.info("Spotify 搜索无结果，尝试使用 TailyAPI 在线搜索歌曲")
         taily_results: List[Song] = []
         try:
@@ -341,11 +542,12 @@ class MusicSearchTool:
             logger.error(f"调用 TailyAPI 搜索歌曲失败: {e}", exc_info=True)
 
         if taily_results:
-            logger.info(f"从 TailyAPI 找到 {len(taily_results)} 首歌曲")
-            return taily_results[:limit]
+            logger.info(f"✅ TailyAPI 搜索成功: {len(taily_results)} 首歌曲")
+            add_step("TailyAPI搜索", "success", {"count": len(taily_results)})
+            return {"songs": taily_results[:limit], "steps": steps, "total_elapsed_ms": round((time.time() - total_start) * 1000, 2), "source": "tailyapi"}
 
-        # 3) 仍然没有结果 → 使用本地 JSON 音乐库做一个简单匹配
-        logger.info("Spotify 和 TailyAPI 均无结果，尝试从本地音乐数据库模糊匹配")
+        # ========== 第 4 层: 本地 JSON 模糊匹配 (保底) ==========
+        logger.info("尝试从本地音乐数据库模糊匹配")
         try:
             q = query.lower()
             local_matches = [
@@ -359,13 +561,15 @@ class MusicSearchTool:
                     if s.genre and genre.lower() in s.genre.lower()
                 ]
             if local_matches:
-                logger.info(f"从本地数据库找到 {len(local_matches)} 首匹配歌曲")
-                return local_matches[:limit]
+                logger.info(f"✅ 本地数据库匹配成功: {len(local_matches)} 首歌曲")
+                add_step("本地数据库匹配", "success", {"count": len(local_matches)})
+                return {"songs": local_matches[:limit], "steps": steps, "total_elapsed_ms": round((time.time() - total_start) * 1000, 2), "source": "local_db"}
         except Exception as e:
             logger.error(f"从本地数据库搜索失败: {e}", exc_info=True)
+            add_step("本地数据库匹配", "error", {"error": str(e)})
 
-        logger.warning("未找到任何匹配的歌曲")
-        return []
+        logger.warning("❌ 未找到任何匹配的歌曲")
+        return {"songs": [], "steps": steps, "total_elapsed_ms": round((time.time() - total_start) * 1000, 2), "source": "none"}
     
     async def get_songs_by_genre(self, genre: str, limit: int = 10) -> List[Song]:
         """
@@ -533,7 +737,8 @@ class MusicRecommenderEngine:
         if mcp_adapter is None:
             mcp_adapter = search_tool.mcp_adapter
         self.mcp_adapter = mcp_adapter
-    
+
+    @timed("recommend_by_mood")
     async def recommend_by_mood(
         self, 
         mood: str, 
@@ -739,7 +944,8 @@ class MusicRecommenderEngine:
         except Exception as e:
             logger.error(f"根据喜欢的歌曲推荐失败: {str(e)}")
             return []
-    
+
+    @timed("recommend_by_activity")
     async def recommend_by_activity(
         self, 
         activity: str, 
@@ -780,28 +986,88 @@ class MusicRecommenderEngine:
             if not spotify_genres:
                 spotify_genres = ["pop"]
             
-            # 使用 Spotify 推荐 API
+            # ========== 第 1 层: RAG 本地搜索 (< 100ms) ==========
+            logger.info(f"使用 RAG 搜索 '{activity}' 活动的歌曲")
+            try:
+                from tools.rag_music_search import get_rag_music_search
+                rag_search = get_rag_music_search()
+
+                # 活动到情绪的映射
+                activity_to_mood = {
+                    "运动": "活力",
+                    "健身": "活力",
+                    "跑步": "运动",
+                    "学习": "专注",
+                    "工作": "专注",
+                    "开车": "活力",
+                    "睡觉": "睡眠",
+                    "休息": "放松",
+                    "派对": "派对",
+                    "聚会": "派对",
+                    "晨跑": "运动",
+                }
+
+                # 优先按情绪搜索
+                mood = activity_to_mood.get(activity, activity)
+                rag_results = rag_search.search_by_mood(mood, top_k=limit * 2)
+
+                # 如果情绪搜索不够，按活动场景搜索补充
+                if len(rag_results) < limit:
+                    activity_results = rag_search.search_by_activity(activity, top_k=limit)
+                    seen_titles = {r["title"] for r in rag_results}
+                    for r in activity_results:
+                        if r["title"] not in seen_titles:
+                            rag_results.append(r)
+                            seen_titles.add(r["title"])
+                        if len(rag_results) >= limit * 2:
+                            break
+
+                if rag_results:
+                    recommendations = []
+                    for result in rag_results[:limit]:
+                        song = Song(
+                            title=result.get("title", "Unknown"),
+                            artist=result.get("artist", "Unknown Artist"),
+                            album=result.get("album"),
+                            genre=result.get("genre") if isinstance(result.get("genre"), str) else None,
+                            year=result.get("year"),
+                            duration=result.get("duration"),
+                            popularity=int(result.get("similarity_score", 0.5) * 100)
+                        )
+                        reason = f"这首歌很适合{activity}时听，{result.get('mood', ['节奏和氛围都很搭'])[0] if result.get('mood') else '节奏和氛围都很搭'}"
+                        recommendations.append(MusicRecommendation(
+                            song=song,
+                            reason=reason,
+                            similarity_score=result.get("similarity_score", 0.8)
+                        ))
+                    logger.info(f"✅ RAG 本地搜索成功: {len(recommendations)} 首 '{activity}' 歌曲")
+                    return recommendations
+
+            except Exception as e:
+                logger.warning(f"RAG 搜索失败: {e}")
+
+            # ========== 第 2 层: Spotify 推荐 API (外部) ==========
+            logger.info(f"RAG 无结果，使用 Spotify 推荐 '{activity}' 歌曲")
             songs = await self.mcp_adapter.get_recommendations(
                 seed_genres=spotify_genres[:5],
                 limit=limit
             )
-            
-            if not songs:
-                logger.warning(f"Spotify 推荐未返回结果，请检查 MCP 配置")
-                return []
-            
-            recommendations = []
-            for song in songs:
-                reason = f"这首歌很适合{activity}时听，节奏和氛围都很搭"
-                recommendations.append(MusicRecommendation(
-                    song=song,
-                    reason=reason,
-                    similarity_score=0.88
-                ))
-            
-            logger.info(f"使用 Spotify 推荐生成了 {len(recommendations)} 条推荐")
-            return recommendations
-            
+
+            if songs:
+                recommendations = []
+                for song in songs:
+                    reason = f"这首歌很适合{activity}时听，节奏和氛围都很搭"
+                    recommendations.append(MusicRecommendation(
+                        song=song,
+                        reason=reason,
+                        similarity_score=0.88
+                    ))
+                logger.info(f"✅ Spotify 推荐成功: {len(recommendations)} 首 '{activity}' 歌曲")
+                return recommendations
+
+            logger.warning(f"所有推荐源均未返回 '{activity}' 的结果")
+            return []
+
         except Exception as e:
             logger.error(f"根据活动场景推荐失败: {str(e)}")
             return []

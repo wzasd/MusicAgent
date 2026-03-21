@@ -18,6 +18,7 @@ except Exception as e:
 
 from config.logging_config import get_logger
 from tools.music_tools import Song
+from utils.performance_monitor import timed
 
 try:
     from llms.siliconflow_llm import SiliconFlowLLM  # type: ignore
@@ -81,52 +82,44 @@ class MCPClientAdapter:
         logger.info("MCPClientAdapter 初始化")
     
     def _get_spotify_client(self):
-        """获取 Spotify 客户端（延迟初始化）"""
-        # 如果之前初始化失败，直接返回 None，避免重复尝试和日志
+        """获取 Spotify 客户端（延迟初始化）- 直接使用 Spotipy"""
         if self._spotify_init_failed:
             return None
-            
+
         if self._spotify_client is None and not self._spotify_initialized:
             try:
-                # 直接导入 MCP 服务器的 Spotify 客户端
-                import sys
-                mcp_path = Path(__file__).parent.parent / "mcp"
-                if str(mcp_path) not in sys.path:
-                    sys.path.insert(0, str(mcp_path))
-                
-                # 将 mcp 目录添加到路径后，直接导入模块
-                import music_server_updated_2025
-                self._spotify_client = music_server_updated_2025.get_spotify_client()
+                import spotipy
+                from spotipy.oauth2 import SpotifyClientCredentials
+
+                client_id = os.getenv("SPOTIFY_CLIENT_ID", "")
+                client_secret = os.getenv("SPOTIFY_CLIENT_SECRET", "")
+
+                if not client_id or not client_secret:
+                    logger.warning("Spotify 凭证未配置 (SPOTIFY_CLIENT_ID/SPOTIFY_CLIENT_SECRET)")
+                    self._spotify_init_failed = True
+                    self._spotify_initialized = True
+                    return None
+
+                client_credentials_manager = SpotifyClientCredentials(
+                    client_id=client_id, client_secret=client_secret
+                )
+                self._spotify_client = spotipy.Spotify(
+                    client_credentials_manager=client_credentials_manager
+                )
                 self._spotify_initialized = True
-                logger.info("Spotify 客户端初始化成功")
+                logger.info("Spotify 客户端初始化成功 (Spotipy)")
             except Exception as e:
                 self._spotify_init_failed = True
-                self._spotify_initialized = True  # 标记为已尝试初始化，避免重复尝试
-                error_msg = str(e)
-                # 对于缺少凭证的情况，使用 WARNING 而不是 ERROR
-                if "credentials not found" in error_msg.lower() or "spotify credentials" in error_msg.lower():
-                    logger.warning("Spotify 凭证未配置，将使用本地数据库作为后备方案。")
-                else:
-                    logger.error(f"初始化 Spotify 客户端失败: {error_msg}")
-                return None  # 返回 None 而不是 raise，让调用方优雅处理
+                self._spotify_initialized = True
+                logger.error(f"初始化 Spotify 客户端失败: {str(e)}")
+                return None
         return self._spotify_client
     
     def _get_mcp_server(self):
         """获取 MCP 服务器模块（延迟初始化）"""
-        if self._mcp_server is None:
-            try:
-                import sys
-                mcp_path = Path(__file__).parent.parent / "mcp"
-                if str(mcp_path) not in sys.path:
-                    sys.path.insert(0, str(mcp_path))
-                
-                import music_server_updated_2025 as mcp_server
-                self._mcp_server = mcp_server
-                logger.info("MCP 服务器模块加载成功")
-            except Exception as e:
-                logger.error(f"加载 MCP 服务器模块失败: {str(e)}")
-                raise
-        return self._mcp_server
+        # MCP 需要 Python 3.10+，在 Python 3.9 下禁用
+        logger.warning("MCP 服务器需要 Python 3.10+，当前版本不支持，将直接使用 Spotipy")
+        return None
     
     def _spotify_track_to_song(self, track: Dict[str, Any]) -> Song:
         """将 Spotify track 数据转换为内部 Song 格式"""
@@ -159,14 +152,15 @@ class MCPClientAdapter:
             spotify_id=track.get("id")
         )
     
+    @timed("spotify_search")
     async def search_tracks(self, query: str, limit: int = 10) -> List[Song]:
         """
         搜索歌曲
-        
+
         Args:
             query: 搜索关键词
             limit: 返回结果数量
-            
+
         Returns:
             歌曲列表
         """
@@ -178,15 +172,65 @@ class MCPClientAdapter:
             tracks = results["tracks"]["items"]
             
             songs = [self._spotify_track_to_song(track) for track in tracks]
-            logger.info(f"搜索到 {len(songs)} 首歌曲")
-            
-            return songs
+
+            # 去重：基于歌曲名和艺术家
+            seen = set()
+            unique_songs = []
+            for song in songs:
+                # 使用歌曲名+艺术家作为唯一键
+                key = (song.title.lower().strip(), song.artist.lower().strip())
+                if key not in seen:
+                    seen.add(key)
+                    unique_songs.append(song)
+
+            logger.info(f"搜索到 {len(songs)} 首歌曲，去重后 {len(unique_songs)} 首")
+
+            return unique_songs
             
         except Exception as e:
             error_msg = str(e)
-            logger.error(f"搜索歌曲失败: {error_msg}", exc_info=True)
-            raise  # 抛出异常，不使用本地数据库
+            logger.warning(f"Spotify 搜索失败: {error_msg}，尝试 MusicBrainz")
+
+            # Spotify 失败，尝试 MusicBrainz
+            try:
+                from tools.musicbrainz_client import get_musicbrainz_client
+                mb_client = get_musicbrainz_client()
+
+                mb_recordings = mb_client.search_recordings(query, limit=limit)
+
+                if mb_recordings:
+                    songs = []
+                    for rec in mb_recordings:
+                        song = Song(
+                            title=rec.title,
+                            artist=rec.artist,
+                            album=rec.album,
+                            genre=rec.genre[0] if rec.genre else None,
+                            year=rec.year,
+                            duration=rec.duration,
+                            popularity=min(100, (rec.score or 50) + 20),
+                            spotify_id=f"mb:{rec.id}"  # 使用 MusicBrainz ID 前缀
+                        )
+                        songs.append(song)
+
+                    # 去重
+                    seen = set()
+                    unique_songs = []
+                    for song in songs:
+                        key = (song.title.lower().strip(), song.artist.lower().strip())
+                        if key not in seen:
+                            seen.add(key)
+                            unique_songs.append(song)
+
+                    logger.info(f"MusicBrainz 搜索到 {len(unique_songs)} 首歌曲")
+                    return unique_songs
+
+            except Exception as mb_error:
+                logger.error(f"MusicBrainz 搜索也失败: {mb_error}")
+
+            raise  # 都失败，抛出异常
     
+    @timed("spotify_recommendations")
     async def get_recommendations(
         self,
         seed_tracks: Optional[List[str]] = None,
@@ -196,13 +240,13 @@ class MCPClientAdapter:
     ) -> List[Song]:
         """
         使用硅基流动API获取音乐推荐
-        
+
         Args:
             seed_tracks: 种子歌曲 ID 列表（最多5个）
             seed_artists: 种子艺术家 ID 列表（最多5个）
             seed_genres: 种子流派列表（最多5个）
             limit: 推荐数量（1-100）
-            
+
         Returns:
             推荐歌曲列表
         """
@@ -266,12 +310,13 @@ class MCPClientAdapter:
             if not seed_info["songs"] and not seed_info["artists"] and seed_genres:
                 logger.info(f"只有流派种子，搜索流派 '{seed_genres[0]}' 的热门歌曲作为种子")
                 try:
+                    # 首先尝试 Spotify
                     search_strategies = [
                         f"genre:{seed_genres[0]}",
                         seed_genres[0],
                         f"tag:{seed_genres[0]}",
                     ]
-                    
+
                     for query in search_strategies:
                         try:
                             search_results = sp.search(q=query, type="track", limit=10)
@@ -281,20 +326,48 @@ class MCPClientAdapter:
                                     if track.get("popularity", 0) > 0 and track.get("id")
                                 ]
                                 tracks = sorted(tracks, key=lambda x: x.get("popularity", 0), reverse=True)[:3]
-                                
+
                                 for track in tracks:
                                     artist_names = [a.get("name", "") for a in track.get("artists", [])]
                                     seed_info["songs"].append({
                                         "name": track.get("name"),
                                         "artist": ", ".join(artist_names) if artist_names else "Unknown"
                                     })
-                                
+
                                 if seed_info["songs"]:
                                     logger.info(f"使用查询 '{query}' 找到 {len(seed_info['songs'])} 首种子歌曲")
                                     break
                         except Exception as e:
                             logger.debug(f"搜索策略 '{query}' 失败: {e}")
                             continue
+
+                    # Spotify 失败，尝试 MusicBrainz
+                    if not seed_info["songs"]:
+                        logger.info("Spotify 流派搜索失败，尝试 MusicBrainz")
+                        from tools.musicbrainz_client import get_musicbrainz_client
+                        mb_client = get_musicbrainz_client()
+
+                        mb_recordings = mb_client.search_recordings(
+                            query=seed_genres[0],
+                            limit=5
+                        )
+
+                        # 去重：避免同名但不同艺术家的种子歌曲
+                        seen_seed_titles = set()
+                        for rec in mb_recordings:
+                            title_lower = rec.title.lower().strip()
+                            if title_lower not in seen_seed_titles:
+                                seen_seed_titles.add(title_lower)
+                                seed_info["songs"].append({
+                                    "name": rec.title,
+                                    "artist": rec.artist
+                                })
+                            if len(seed_info["songs"]) >= 3:
+                                break
+
+                        if seed_info["songs"]:
+                            logger.info(f"从 MusicBrainz 找到 {len(seed_info['songs'])} 首种子歌曲(去重后)")
+
                 except Exception as e:
                     logger.warning(f"搜索种子歌曲失败: {e}")
             
@@ -303,66 +376,89 @@ class MCPClientAdapter:
                 logger.error("无法获取种子信息，无法生成推荐")
                 return []
             
-            # 使用硅基流动API生成推荐
-            if SiliconFlowLLM is None:
-                logger.warning(
-                    "硅基流动LLM 未就绪，跳过AI推荐。原因: %s",
-                    _silicon_import_error or "未知",
-                )
-                return []
-            logger.info("使用硅基流动API生成推荐...")
-            try:
-                llm = SiliconFlowLLM()
-                
-                # 构建提示词
-                system_prompt = """你是一个专业的音乐推荐专家。根据用户提供的种子信息（喜欢的歌曲、艺术家、流派），推荐相似风格的音乐。
-请返回推荐的歌曲列表，格式为JSON数组，每个推荐包含歌曲名和艺术家名。
-格式示例：
-[
-  {"song": "歌曲名1", "artist": "艺术家名1"},
-  {"song": "歌曲名2", "artist": "艺术家名2"}
-]
-只返回JSON数组，不要其他文字说明。"""
-                
-                user_prompt = f"""根据以下信息推荐 {limit} 首相似风格的音乐：
+            # 使用 MusicBrainz/TailyAPI 搜索真实歌曲，而不是用 LLM 生成
+            logger.info("Spotify 不可用，使用 MusicBrainz 搜索真实歌曲...")
 
-"""
-                if seed_info["songs"]:
-                    user_prompt += "喜欢的歌曲：\n"
-                    for song in seed_info["songs"]:
-                        user_prompt += f"- {song['name']} by {song['artist']}\n"
-                    user_prompt += "\n"
-                
-                if seed_info["artists"]:
-                    user_prompt += f"喜欢的艺术家：{', '.join(seed_info['artists'])}\n\n"
-                
-                if seed_info["genres"]:
-                    user_prompt += f"喜欢的流派：{', '.join(seed_info['genres'])}\n\n"
-                
-                user_prompt += f"请推荐 {limit} 首相似风格的音乐，返回JSON数组格式。"
-                
-                # 调用硅基流动API
-                response_text = llm.invoke(system_prompt, user_prompt, temperature=0.3, max_tokens=2000)
-                
-                # 解析JSON响应
-                import re
-                # 尝试提取JSON数组
-                json_match = re.search(r'\[.*\]', response_text, re.DOTALL)
-                if json_match:
-                    recommendations_data = json.loads(json_match.group())
-                else:
-                    # 如果找不到JSON，尝试直接解析整个响应
-                    recommendations_data = json.loads(response_text)
-                
-                if not isinstance(recommendations_data, list):
-                    logger.error(f"硅基流动API返回格式错误: {type(recommendations_data)}")
-                    return []
-                
-                logger.info(f"硅基流动API生成了 {len(recommendations_data)} 首推荐")
-                
-            except Exception as e:
-                logger.error(f"使用硅基流动API生成推荐失败: {e}", exc_info=True)
-                return []
+            recommendations_data = []
+
+            # 1. 如果有种子歌曲，搜索相似风格的歌曲
+            if seed_info["songs"]:
+                from tools.musicbrainz_client import get_musicbrainz_client
+                mb_client = get_musicbrainz_client()
+
+                for seed_song in seed_info["songs"][:2]:  # 取前2首种子
+                    try:
+                        mb_results = mb_client.search_recordings(
+                            query=seed_song["name"],
+                            artist=seed_song.get("artist"),
+                            limit=3
+                        )
+                        for rec in mb_results:
+                            recommendations_data.append({
+                                "song": rec.title,
+                                "artist": rec.artist,
+                                "source": "musicbrainz_similar"
+                            })
+                    except Exception as e:
+                        logger.debug(f"MusicBrainz 搜索失败: {e}")
+                        continue
+
+            # 2. 如果有流派，搜索该流派的歌曲
+            if seed_info["genres"] and len(recommendations_data) < limit:
+                from tools.musicbrainz_client import get_musicbrainz_client
+                mb_client = get_musicbrainz_client()
+
+                for genre in seed_info["genres"][:2]:  # 取前2个流派
+                    try:
+                        mb_results = mb_client.search_recordings(
+                            query=genre,
+                            limit=limit - len(recommendations_data)
+                        )
+                        for rec in mb_results:
+                            recommendations_data.append({
+                                "song": rec.title,
+                                "artist": rec.artist,
+                                "source": "musicbrainz_genre"
+                            })
+                            if len(recommendations_data) >= limit:
+                                break
+                    except Exception as e:
+                        logger.debug(f"MusicBrainz 流派搜索失败: {e}")
+                        continue
+
+                    if len(recommendations_data) >= limit:
+                        break
+
+            # 去重 - 同时按 (歌曲, 艺术家) 和歌曲名去重
+            # 避免推荐同名但不同艺术家的多版本
+            seen_full = set()  # (歌曲, 艺术家)
+            seen_titles = set()  # 仅歌曲名
+            unique_recommendations = []
+
+            for rec in recommendations_data:
+                title = rec["song"].lower().strip()
+                artist = rec["artist"].lower().strip()
+                key_full = (title, artist)
+
+                # 如果 (歌曲, 艺术家) 组合已存在，跳过
+                if key_full in seen_full:
+                    continue
+
+                # 如果歌曲名已存在（不同艺术家版本），也跳过
+                if title in seen_titles:
+                    logger.debug(f"跳过同名不同版本: {rec['song']} by {rec['artist']} (已存在其他版本)")
+                    continue
+
+                seen_full.add(key_full)
+                seen_titles.add(title)
+                unique_recommendations.append(rec)
+
+                if len(unique_recommendations) >= limit:
+                    break
+
+            recommendations_data = unique_recommendations
+            logger.info(f"通过 MusicBrainz 找到 {len(recommendations_data)} 首真实歌曲(去重后)")
+            logger.info(f"通过 MusicBrainz 找到 {len(recommendations_data)} 首真实歌曲")
             
             # 使用Spotify搜索API查找推荐的歌曲
             found_songs = []
@@ -416,14 +512,104 @@ class MCPClientAdapter:
                     logger.debug(f"搜索推荐歌曲失败: {e}")
                     continue
             
-            logger.info(f"成功找到 {len(found_songs)} 首推荐歌曲")
+            # 如果 Spotify 没有找到歌曲，使用 MusicBrainz 搜索作为回退
+            if not found_songs and recommendations_data:
+                logger.info("Spotify 搜索无结果，尝试 MusicBrainz 搜索")
+                try:
+                    from tools.musicbrainz_client import get_musicbrainz_client
+                    mb_client = get_musicbrainz_client()
+
+                    for rec in recommendations_data[:limit * 2]:
+                        try:
+                            song_name = rec.get("song") or rec.get("name") or rec.get("title")
+                            artist_name = rec.get("artist") or rec.get("artist_name")
+
+                            if not song_name:
+                                continue
+
+                            # 使用 MusicBrainz 搜索
+                            mb_recordings = mb_client.search_recordings(
+                                query=song_name,
+                                artist=artist_name,
+                                limit=3
+                            )
+
+                            if mb_recordings:
+                                mb_rec = mb_recordings[0]  # 取最佳匹配
+                                song = Song(
+                                    title=mb_rec.title,
+                                    artist=mb_rec.artist,
+                                    album=mb_rec.album,
+                                    genre=mb_rec.genre[0] if mb_rec.genre else None,
+                                    year=mb_rec.year,
+                                    duration=mb_rec.duration,
+                                    popularity=min(100, (mb_rec.score or 50) + 20),
+                                    spotify_id=f"mb:{mb_rec.id}"
+                                )
+                                found_songs.append(song)
+                                logger.debug(f"从 MusicBrainz 找到: {song.title} by {song.artist}")
+
+                            if len(found_songs) >= limit:
+                                break
+
+                        except Exception as e:
+                            logger.debug(f"MusicBrainz 搜索推荐歌曲失败: {e}")
+                            continue
+
+                    if found_songs:
+                        logger.info(f"从 MusicBrainz 找到 {len(found_songs)} 首推荐歌曲")
+
+                except Exception as mb_error:
+                    logger.warning(f"MusicBrainz 搜索失败: {mb_error}")
+
+            # 如果 MusicBrainz 也没有找到，使用 RAG 搜索作为最后回退
+            if not found_songs and recommendations_data:
+                logger.info("MusicBrainz 搜索无结果，使用 RAG 向量搜索")
+                try:
+                    from tools.rag_music_search import get_rag_music_search
+                    rag_search = get_rag_music_search()
+
+                    # 将 LLM 推荐添加到 RAG 索引
+                    rag_search.add_llm_recommendations(recommendations_data)
+
+                    # 构建查询（结合流派和种子信息）
+                    query_parts = []
+                    if seed_genres:
+                        query_parts.extend(seed_genres)
+                    if seed_artists:
+                        query_parts.extend(seed_artists)
+                    query = " ".join(query_parts) if query_parts else "recommended music"
+
+                    # 执行 RAG 搜索
+                    rag_results = rag_search.search(query, top_k=limit)
+
+                    if rag_results:
+                        for result in rag_results:
+                            song = Song(
+                                title=result.get("title", "Unknown"),
+                                artist=result.get("artist", "Unknown Artist"),
+                                album=result.get("album"),
+                                genre=result.get("genre") if isinstance(result.get("genre"), str) else None,
+                                year=result.get("year"),
+                                duration=result.get("duration"),
+                                popularity=int(result.get("similarity_score", 0.5) * 100),
+                                external_url=result.get("external_url")
+                            )
+                            found_songs.append(song)
+
+                        logger.info(f"从 RAG 搜索找到 {len(found_songs)} 首推荐歌曲")
+
+                except Exception as rag_error:
+                    logger.warning(f"RAG 搜索失败: {rag_error}")
+
             return found_songs[:limit]
-            
+
         except Exception as e:
             error_msg = str(e)
             logger.error(f"获取推荐失败: {error_msg}", exc_info=True)
             return []
     
+    @timed("spotify_audio_features")
     async def get_audio_features(self, track_ids: List[str]) -> Dict[str, Any]:
         """批量获取 Spotify 音频特征"""
         try:
@@ -579,6 +765,7 @@ class MCPClientAdapter:
                 logger.error(f"获取用户热门艺术家失败: {error_msg}", exc_info=True)
             return []
     
+    @timed("spotify_create_playlist")
     async def create_playlist(
         self,
         name: str,

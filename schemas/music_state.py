@@ -42,6 +42,40 @@ class MusicAgentState(TypedDict, total=False):
     playlist_balance_config: Dict[str, Any]  # 平衡配置
     created_playlist: Optional[Dict[str, Any]]  # 创建的播放列表信息
 
+    # Agent 状态跟踪（新增 - Phase 3）
+    agent_status: Optional["AgentStatus"]  # Agent 实时状态
+    token_usage: Optional[Dict[str, "TokenUsageInfo"]]  # Token 使用统计
+
+
+class TokenUsageInfo(TypedDict, total=False):
+    """Token 使用信息"""
+    prompt_tokens: int
+    completion_tokens: int
+    total_tokens: int
+    model: str
+    provider: str
+
+
+class NodeExecutionInfo(TypedDict, total=False):
+    """节点执行信息"""
+    node_name: str
+    status: str  # pending, running, completed, failed, skipped
+    start_time: Optional[str]
+    end_time: Optional[str]
+    duration_ms: Optional[int]
+    error_message: Optional[str]
+
+
+class AgentStatus(TypedDict, total=False):
+    """Agent 实时状态"""
+    request_id: str
+    current_node: Optional[str]
+    overall_status: str  # idle, running, completed, failed
+    nodes_executed: int
+    total_nodes: int
+    node_history: List[NodeExecutionInfo]
+    elapsed_ms: Optional[int]
+
 
 class UserPreferences(TypedDict, total=False):
     """用户音乐偏好"""

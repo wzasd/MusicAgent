@@ -31,9 +31,13 @@ except Exception as e:
 
 from config.logging_config import get_logger
 from music_agent import MusicRecommendationAgent
+from utils.performance_monitor import PerformanceContext, get_current_timer
 from services import PlaylistRecommendationService
 from services.journey_service import MusicJourneyService, MoodPoint
 from tools.music_tools import get_music_search_tool
+from graphs.music_graph import get_agent_status_tracker, _clean_search_query
+from llms.siliconflow_llm import get_chat_model
+from prompts.music_prompts import MUSIC_INTENT_ANALYZER_PROMPT
 
 logger = get_logger(__name__)
 
@@ -52,6 +56,25 @@ app.add_middleware(
 _agent: Optional[MusicRecommendationAgent] = None
 _playlist_service: Optional[PlaylistRecommendationService] = None
 _journey_service: Optional[MusicJourneyService] = None
+
+# 搜索日志存储（内存中，最近50条）
+_search_logs: List[Dict[str, Any]] = []
+_MAX_LOGS = 50
+
+
+def add_search_log(log_entry: Dict[str, Any]):
+    """添加搜索日志"""
+    global _search_logs
+    from datetime import datetime
+    log_entry["timestamp"] = datetime.now().isoformat()
+    _search_logs.insert(0, log_entry)  # 新日志放前面
+    if len(_search_logs) > _MAX_LOGS:
+        _search_logs = _search_logs[:_MAX_LOGS]
+
+
+def get_search_logs(limit: int = 20) -> List[Dict[str, Any]]:
+    """获取最近搜索日志"""
+    return _search_logs[:limit]
 
 
 def get_agent() -> MusicRecommendationAgent:
@@ -116,59 +139,140 @@ async def stream_recommendations(
     user_preferences: Optional[Dict[str, Any]] = None
 ) -> AsyncGenerator[str, None]:
     """
-    流式生成推荐结果
-    
+    流式生成推荐结果 - 增强版，带完整性能监控和Agent状态跟踪
+
     Yields:
         SSE格式的数据块
     """
-    try:
-        agent = get_agent()
-        
-        # 发送开始事件
-        yield f"data: {json.dumps({'type': 'start', 'message': '开始分析你的需求...'}, ensure_ascii=False)}\n\n"
-        await asyncio.sleep(0.1)
-        
-        # 发送思考事件
-        yield f"data: {json.dumps({'type': 'thinking', 'message': '正在理解你的音乐偏好...'}, ensure_ascii=False)}\n\n"
-        await asyncio.sleep(0.2)
-        
-        # 执行推荐（这里可以进一步拆分步骤）
-        result = await agent.get_recommendations(
-            query=query,
-            user_preferences=user_preferences
-        )
-        
-        # 发送响应文本（流式输出）
-        if result.get("success") and result.get("response"):
-            response_text = result["response"]
-            # 逐字符或逐词流式输出
-            words = response_text.split()
-            for i, word in enumerate(words):
-                partial_text = " ".join(words[:i+1])
-                yield f"data: {json.dumps({'type': 'response', 'text': partial_text, 'is_complete': False}, ensure_ascii=False)}\n\n"
-                await asyncio.sleep(0.05)  # 控制输出速度
-            
-            # 发送完整响应
-            yield f"data: {json.dumps({'type': 'response', 'text': response_text, 'is_complete': True}, ensure_ascii=False)}\n\n"
-        
-        # 发送推荐歌曲（逐个发送）
-        if result.get("success") and result.get("recommendations"):
-            recommendations = result["recommendations"]
-            yield f"data: {json.dumps({'type': 'recommendations_start', 'count': len(recommendations)}, ensure_ascii=False)}\n\n"
-            
-            for i, rec in enumerate(recommendations):
-                song = rec.get("song", rec)
-                yield f"data: {json.dumps({'type': 'song', 'song': song, 'index': i, 'total': len(recommendations)}, ensure_ascii=False)}\n\n"
-                await asyncio.sleep(0.1)
-            
-            yield f"data: {json.dumps({'type': 'recommendations_complete'}, ensure_ascii=False)}\n\n"
-        
-        # 发送完成事件
-        yield f"data: {json.dumps({'type': 'complete', 'success': True}, ensure_ascii=False)}\n\n"
-        
-    except Exception as e:
-        logger.error(f"流式推荐失败: {str(e)}", exc_info=True)
-        yield f"data: {json.dumps({'type': 'error', 'message': str(e)}, ensure_ascii=False)}\n\n"
+    import time
+
+    # 使用性能监控上下文
+    async with PerformanceContext() as timer:
+        start_time = time.time()
+        first_token_time = None
+        inference_start_time = None
+
+        # 获取Agent状态跟踪器
+        status_tracker = get_agent_status_tracker()
+        status_tracker.start_request()
+
+        try:
+            agent = get_agent()
+
+            # 发送开始事件
+            yield f"data: {json.dumps({'type': 'start', 'message': '开始分析你的需求...', 'trace_id': id(timer)}, ensure_ascii=False)}\n\n"
+            await asyncio.sleep(0.1)
+
+            # 发送初始Agent状态
+            yield f"data: {json.dumps({'type': 'agent_status', 'status': status_tracker.get_status()}, ensure_ascii=False)}\n\n"
+
+            # 发送思考事件
+            yield f"data: {json.dumps({'type': 'thinking', 'message': '正在理解你的音乐偏好...'}, ensure_ascii=False)}\n\n"
+            await asyncio.sleep(0.2)
+
+            # 记录推理开始时间
+            inference_start_time = time.time()
+
+            # 执行推荐
+            result = await agent.get_recommendations(
+                query=query,
+                user_preferences=user_preferences
+            )
+
+            # 发送Agent状态更新
+            final_status = status_tracker.get_status()
+            yield f"data: {json.dumps({'type': 'agent_status', 'status': final_status}, ensure_ascii=False)}\n\n"
+
+            # 发送响应文本（流式输出）
+            if result.get("success") and result.get("response"):
+                response_text = result["response"]
+
+                # 记录首字时间
+                if first_token_time is None:
+                    first_token_time = time.time()
+
+                # 逐字符或逐词流式输出
+                words = response_text.split()
+                for i, word in enumerate(words):
+                    partial_text = " ".join(words[:i+1])
+                    yield f"data: {json.dumps({'type': 'response', 'text': partial_text, 'is_complete': False}, ensure_ascii=False)}\n\n"
+                    await asyncio.sleep(0.05)  # 控制输出速度
+
+                # 发送完整响应
+                yield f"data: {json.dumps({'type': 'response', 'text': response_text, 'is_complete': True}, ensure_ascii=False)}\n\n"
+
+            # 记录推理结束时间
+            inference_end_time = time.time()
+            inference_time = inference_end_time - (inference_start_time or start_time)
+
+            # 发送推荐歌曲（逐个发送）
+            if result.get("success") and result.get("recommendations"):
+                recommendations = result["recommendations"]
+                yield f"data: {json.dumps({'type': 'recommendations_start', 'count': len(recommendations)}, ensure_ascii=False)}\n\n"
+
+                for i, rec in enumerate(recommendations):
+                    song = rec.get("song", rec)
+                    yield f"data: {json.dumps({'type': 'song', 'song': song, 'index': i, 'total': len(recommendations)}, ensure_ascii=False)}\n\n"
+                    await asyncio.sleep(0.1)
+
+                yield f"data: {json.dumps({'type': 'recommendations_complete'}, ensure_ascii=False)}\n\n"
+
+            # 计算总耗时
+            total_time = time.time() - start_time
+            first_token_latency = (first_token_time - start_time) if first_token_time else None
+
+            # 从计时器获取详细指标
+            perf_summary = timer.get_summary()
+            flat_timings = timer.get_flat_timings()
+
+            # search_time 从计时器中获取（由装饰器自动记录，单位已经是ms）
+            search_time_ms = (
+                flat_timings.get('music_search_total_ms', 0) +
+                flat_timings.get('spotify_search_total_ms', 0) +
+                flat_timings.get('tailyapi_search_total_ms', 0) +
+                flat_timings.get('recommend_by_activity_total_ms', 0) +
+                flat_timings.get('recommend_by_mood_total_ms', 0)
+            )
+
+            # 记录详细日志用于调试
+            logger.info(f"性能指标 - 总时间: {total_time*1000:.2f}ms, "
+                       f"首字延迟: {first_token_latency*1000 if first_token_latency else 0:.2f}ms, "
+                       f"推理时间: {inference_time*1000:.2f}ms, "
+                       f"搜索时间: {search_time_ms:.2f}ms")
+
+            # 发送性能指标 - 增强版
+            performance_metrics = {
+                'type': 'performance',
+                'metrics': {
+                    'total_time_ms': round(total_time * 1000, 2),
+                    'first_token_latency_ms': round(first_token_latency * 1000, 2) if first_token_latency else None,
+                    'inference_time_ms': round(inference_time * 1000, 2),
+                    'search_time_ms': round(search_time_ms, 2) if search_time_ms > 0 else None,
+                    # 新增详细指标
+                    'node_timings': perf_summary.get('timings', {}),
+                    'token_usage': perf_summary.get('token_usage', {}),
+                    'api_calls': {
+                        'spotify_search': len(timer.timings.get('spotify_search', [])),
+                        'llm_calls': (
+                            len(timer.timings.get('node_analyze_intent', [])) +
+                            len(timer.timings.get('node_generate_explanation', []))
+                        ),
+                    }
+                }
+            }
+            yield f"data: {json.dumps(performance_metrics, ensure_ascii=False)}\n\n"
+
+            # 发送完成事件
+            yield f"data: {json.dumps({'type': 'complete', 'success': True}, ensure_ascii=False)}\n\n"
+
+        except Exception as e:
+            logger.error(f"流式推荐失败: {str(e)}", exc_info=True)
+            # 即使出错也发送已收集的性能指标
+            try:
+                perf_summary = timer.get_summary()
+                yield f"data: {json.dumps({'type': 'error', 'message': str(e), 'partial_metrics': perf_summary}, ensure_ascii=False)}\n\n"
+            except:
+                yield f"data: {json.dumps({'type': 'error', 'message': str(e)}, ensure_ascii=False)}\n\n"
 
 
 async def stream_playlist(
@@ -477,27 +581,199 @@ async def generate_journey(request: JourneyRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def _clean_json_from_llm(llm_output: str) -> str:
+    """从 LLM 输出中提取纯 JSON"""
+    import re
+    # 尝试提取 markdown 代码块
+    match = re.search(r"```(?:json)?(.*?)```", llm_output, re.DOTALL)
+    if match:
+        return match.group(1).strip()
+
+    # 尝试找到第一个完整的 JSON 对象
+    text = llm_output.strip()
+    start_idx = text.find('{')
+    if start_idx == -1:
+        return text
+
+    brace_count = 0
+    end_idx = start_idx
+    for i, char in enumerate(text[start_idx:], start=start_idx):
+        if char == '{':
+            brace_count += 1
+        elif char == '}':
+            brace_count -= 1
+            if brace_count == 0:
+                end_idx = i + 1
+                break
+
+    return text[start_idx:end_idx]
+
+
+@app.get("/api/logs")
+async def get_logs(limit: int = 20):
+    """
+    获取最近的搜索日志
+    """
+    try:
+        logs = get_search_logs(limit=limit)
+        return {
+            "success": True,
+            "count": len(logs),
+            "logs": logs
+        }
+    except Exception as e:
+        logger.error(f"获取日志失败: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post("/api/search")
 async def search_music(request: SearchRequest):
     """
-    使用统一的搜索工具搜索歌曲。
+    使用LLM意图分析提取槽位，然后搜索歌曲。
+    - 优先歌词搜索（如果是歌词查询）
     - 优先 Spotify/MCP
     - 失败或无结果时自动回退到 TailyAPI
     - 仍无结果时使用本地 JSON 数据库模糊匹配
     """
     try:
+        original_query = request.query
+
+        # ===== 使用 LLM 进行意图分析和槽位提取 =====
+        llm = get_chat_model()
+        intent_prompt = MUSIC_INTENT_ANALYZER_PROMPT.format(user_input=original_query)
+
+        try:
+            response = await llm.ainvoke(intent_prompt)
+            cleaned_json = _clean_json_from_llm(response.content)
+            intent_data = json.loads(cleaned_json)
+
+            intent_type = intent_data.get("intent_type", "search")
+            parameters = intent_data.get("parameters", {})
+
+            logger.info(f"搜索请求: 原始='{original_query}', 意图='{intent_type}', 参数={parameters}")
+        except Exception as e:
+            logger.warning(f"LLM意图分析失败: {e}, 使用默认搜索")
+            intent_type = "search"
+            parameters = {"query": original_query}
+
+        # 记录搜索日志
+        log_entry = {
+            "action": "search",
+            "original_query": original_query,
+            "intent": intent_type,
+            "parameters": parameters,
+        }
+
+        # 根据意图类型执行不同搜索
         search_tool = get_music_search_tool()
-        songs = await search_tool.search_songs(
-            query=request.query,
-            genre=request.genre,
-            limit=request.limit,
-        )
+        start_time = __import__('time').time()
+
+        # 执行搜索并获取来源信息
+        search_result = None
+        source = "unknown"
+
+        if intent_type == "search_by_lyrics":
+            # 歌词搜索
+            lyrics = parameters.get("lyrics", original_query)
+            search_result = await search_tool.search_songs_with_steps(
+                query=lyrics,
+                genre=request.genre,
+                limit=request.limit,
+                is_lyrics=True,
+            )
+            songs = search_result.get("songs", [])
+            source = search_result.get("source", "unknown")
+        elif intent_type == "search":
+            # 普通歌曲搜索
+            query = parameters.get("query", original_query)
+            cleaned_query = _clean_search_query(query)
+            search_result = await search_tool.search_songs_with_steps(
+                query=cleaned_query,
+                genre=request.genre,
+                limit=request.limit,
+            )
+            songs = search_result.get("songs", [])
+            source = search_result.get("source", "unknown")
+        elif intent_type in ["recommend_by_artist", "recommend_by_genre"]:
+            # 艺术家或流派搜索
+            search_param = parameters.get("artist") or parameters.get("genre") or original_query
+            cleaned_query = _clean_search_query(search_param)
+            search_result = await search_tool.search_songs_with_steps(
+                query=cleaned_query,
+                genre=request.genre,
+                limit=request.limit,
+            )
+            songs = search_result.get("songs", [])
+            source = search_result.get("source", "unknown")
+        elif intent_type == "recommend_by_activity":
+            # 活动场景推荐
+            activity = parameters.get("activity", "放松")
+            from tools.music_tools import get_music_recommender
+            recommender = get_music_recommender()
+            recs = await recommender.recommend_by_activity(activity, limit=request.limit)
+            # 将推荐转换为歌曲列表，并附加推荐理由
+            songs = []
+            for rec in recs:
+                song_dict = rec.song.to_dict()
+                song_dict['reason'] = rec.reason
+                song_dict['similarity_score'] = rec.similarity_score
+                songs.append(song_dict)
+            source = "activity_recommendation"
+        elif intent_type == "recommend_by_mood":
+            # 心情推荐
+            mood = parameters.get("mood", "开心")
+            from tools.music_tools import get_music_recommender
+            recommender = get_music_recommender()
+            recs = await recommender.recommend_by_mood(mood, limit=request.limit)
+            # 将推荐转换为歌曲列表，并附加推荐理由
+            songs = []
+            for rec in recs:
+                song_dict = rec.song.to_dict()
+                song_dict['reason'] = rec.reason
+                song_dict['similarity_score'] = rec.similarity_score
+                songs.append(song_dict)
+            source = "mood_recommendation"
+        else:
+            # 其他情况使用默认搜索
+            cleaned_query = _clean_search_query(original_query)
+            search_result = await search_tool.search_songs_with_steps(
+                query=cleaned_query,
+                genre=request.genre,
+                limit=request.limit,
+            )
+            songs = search_result.get("songs", [])
+            source = search_result.get("source", "unknown")
+
+        # 计算耗时
+        elapsed_time = (__import__('time').time() - start_time) * 1000
+
+        # 完成日志记录
+        log_entry.update({
+            "result_count": len(songs),
+            "elapsed_ms": round(elapsed_time, 2),
+            "status": "success",
+            "source": source
+        })
+        add_search_log(log_entry)
+
         return {
             "success": True,
             "count": len(songs),
-            "songs": [s.to_dict() for s in songs],
+            "songs": [s.to_dict() if hasattr(s, 'to_dict') else s for s in songs],
+            "intent": intent_type,
+            "parameters": parameters,
+            "source": source,
         }
     except Exception as e:
+        # 记录失败日志
+        elapsed_time = (__import__('time').time() - start_time) * 1000
+        log_entry.update({
+            "result_count": 0,
+            "elapsed_ms": round(elapsed_time, 2),
+            "status": "error",
+            "error": str(e)
+        })
+        add_search_log(log_entry)
         logger.error(f"搜索歌曲失败: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 

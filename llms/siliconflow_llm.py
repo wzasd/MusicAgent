@@ -69,17 +69,17 @@ class SiliconFlowLLM(BaseLLM):
             # 如果都失败，使用默认值
             return "deepseek-ai/DeepSeek-V3"
     
-    def invoke(self, system_prompt: str, user_prompt: str, **kwargs) -> str:
+    def invoke(self, system_prompt: str, user_prompt: str, **kwargs) -> Dict[str, Any]:
         """
         调用硅基流动API生成回复
-        
+
         Args:
             system_prompt: 系统提示词
             user_prompt: 用户输入
             **kwargs: 其他参数，如temperature、max_tokens等
-            
+
         Returns:
-            硅基流动生成的回复文本
+            包含回复文本和token使用量的字典
         """
         try:
             # 构建消息
@@ -87,7 +87,7 @@ class SiliconFlowLLM(BaseLLM):
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
             ]
-            
+
             # 设置默认参数
             params = {
                 "model": self.default_model,
@@ -96,20 +96,61 @@ class SiliconFlowLLM(BaseLLM):
                 "max_tokens": kwargs.get("max_tokens", 4000),
                 "stream": False
             }
-            
+
             # 调用API
             response = self.client.chat.completions.create(**params)
-            
+
             # 提取回复内容
             if response.choices and response.choices[0].message:
                 content = response.choices[0].message.content
-                return self.validate_response(content)
+
+                # 提取token使用量
+                usage = {}
+                if hasattr(response, 'usage') and response.usage:
+                    usage = {
+                        'prompt_tokens': response.usage.prompt_tokens or 0,
+                        'completion_tokens': response.usage.completion_tokens or 0,
+                        'total_tokens': response.usage.total_tokens or 0,
+                    }
+
+                return {
+                    'content': self.validate_response(content),
+                    'usage': usage,
+                    'model': self.default_model,
+                }
             else:
-                return ""
-                
+                return {'content': '', 'usage': {}, 'model': self.default_model}
+
         except Exception as e:
             print(f"硅基流动API调用错误: {str(e)}")
             raise e
+
+    def invoke_text(self, system_prompt: str, user_prompt: str, **kwargs) -> str:
+        """只返回文本内容的便捷方法（向后兼容）"""
+        result = self.invoke(system_prompt, user_prompt, **kwargs)
+        return result.get('content', '')
+
+    async def ainvoke(self, prompt: str, **kwargs) -> str:
+        """
+        异步调用LLM（兼容LangChain接口）
+
+        Args:
+            prompt: 提示词
+            **kwargs: 其他参数
+
+        Returns:
+            生成的文本内容
+        """
+        import asyncio
+        loop = asyncio.get_event_loop()
+        # 在线程池中运行同步的invoke
+        result = await loop.run_in_executor(
+            None,
+            lambda: self.invoke("You are a helpful assistant.", prompt, **kwargs)
+        )
+        if isinstance(result, dict):
+            return result.get('content', '')
+        return str(result)
     
     def get_model_info(self) -> Dict[str, Any]:
         """
