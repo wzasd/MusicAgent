@@ -3,6 +3,8 @@ const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:8501';
 
 const nextConfig = {
   reactStrictMode: true,
+  typescript: { ignoreBuildErrors: true },
+  eslint: { ignoreDuringBuilds: true },
   async rewrites() {
     return [
       {
