@@ -64,10 +64,11 @@ export default function LogsPage() {
     return labels[intent] || intent;
   };
 
-  const getSourceType = (source?: string): 'RAG' | 'API' | 'LLM' | '混合' | '未找到' => {
+  const getSourceType = (source?: string): 'RAG' | 'API' | 'LLM' | 'Web' | '未找到' => {
     if (!source) return 'RAG';
     if (source.includes('not_found')) return '未找到';
     if (source === 'llm_lyrics') return 'LLM';
+    if (source === 'web_search') return 'Web';
     if (source === 'spotify' || source === 'mcp') return 'API';
     return 'RAG';
   };
@@ -81,6 +82,7 @@ export default function LogsPage() {
       genre_not_found: '未找到',
       lyrics_db: 'RAG · 歌词库',
       llm_lyrics: 'LLM · 歌词识别',
+      web_search: 'Web · 歌词搜索',
       activity_recommendation: 'RAG · 活动场景',
       mood_recommendation: 'RAG · 心情',
     };
@@ -93,6 +95,7 @@ export default function LogsPage() {
       case 'RAG':    return { bg: '#dbeafe', text: '#1e40af' };
       case 'API':    return { bg: '#d1fae5', text: '#065f46' };
       case 'LLM':    return { bg: '#ede9fe', text: '#5b21b6' };
+      case 'Web':    return { bg: '#fce7f3', text: '#9d174d' };
       case '未找到': return { bg: '#fef3c7', text: '#92400e' };
       default:       return { bg: '#f3f4f6', text: '#374151' };
     }

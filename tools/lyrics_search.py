@@ -179,15 +179,19 @@ class LyricsSearchEngine:
 
 
     async def search_with_llm_fallback(self, query: str, top_k: int = 5) -> List[Dict[str, Any]]:
+        """歌词搜索入口（兼容旧调用），内部走 web search 兜底。"""
+        return await self.search_with_web_fallback(query, top_k=top_k)
+
+    async def search_with_web_fallback(self, query: str, top_k: int = 5) -> List[Dict[str, Any]]:
         """
-        歌词搜索：本地数据库优先，命中不了则调 LLM 识别
+        歌词搜索：本地数据库优先，命中不了则用 Tavily Web Search 查歌词来源。
 
         Args:
             query: 用户原始输入（含歌词片段）
             top_k: 返回结果数量
 
         Returns:
-            歌曲列表，source 字段标记来源 ("lyrics_db" 或 "llm_lyrics")
+            歌曲列表，source 字段标记来源 ("lyrics_db" 或 "web_search")
         """
         # Step 1: 本地数据库匹配
         local_results = self.search_by_lyrics(query, top_k=top_k)
@@ -197,55 +201,97 @@ class LyricsSearchEngine:
                 r["source"] = "lyrics_db"
             return local_results
 
-        # Step 2: LLM 兜底识别
+        # Step 2: Tavily Web Search 兜底
         lyrics_content = self.extract_lyrics_content(query)
         if not lyrics_content:
             lyrics_content = query
 
-        logger.info(f"本地未命中，调用 LLM 识别歌词: '{lyrics_content}'")
+        logger.info(f"本地未命中，使用 Web Search 识别歌词: '{lyrics_content}'")
 
         try:
-            from llms.siliconflow_llm import SiliconFlowLLM
-            from prompts.music_prompts import LYRICS_IDENTIFICATION_PROMPT
+            from config.settings_loader import load_settings_from_json
+            import aiohttp
 
-            llm = SiliconFlowLLM()
-            prompt = LYRICS_IDENTIFICATION_PROMPT.format(lyrics=lyrics_content)
-            response = llm.invoke_text("你是音乐专家。", prompt)
-
-            # 解析 JSON
-            json_match = re.search(r'\{.*\}', response, re.DOTALL)
-            if not json_match:
-                logger.warning("LLM 返回内容无法解析为 JSON")
+            settings = load_settings_from_json()
+            api_key = settings.get("TAILYAPI_API_KEY", "")
+            if not api_key:
+                logger.warning("Tavily API Key 未配置，跳过 Web Search")
                 return local_results
 
-            data = json.loads(json_match.group())
-            title = data.get("title")
-            artist = data.get("artist")
-            confidence = float(data.get("confidence", 0))
-            reason = data.get("reason", "")
+            search_query = f'"{lyrics_content}" 歌名 歌手 这首歌叫什么'
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    "https://api.tavily.com/search",
+                    json={
+                        "api_key": api_key,
+                        "query": search_query,
+                        "search_depth": "basic",
+                        "include_answer": True,
+                        "max_results": 5,
+                    },
+                    headers={"Content-Type": "application/json"},
+                    timeout=aiohttp.ClientTimeout(total=10),
+                ) as resp:
+                    if resp.status != 200:
+                        logger.error(f"Tavily 请求失败: {resp.status}")
+                        return local_results
+                    data = await resp.json()
+
+            answer = data.get("answer", "")
+            snippets = "\n".join(
+                r.get("content", "")[:300] for r in data.get("results", [])[:3]
+            )
+            combined = f"搜索答案: {answer}\n\n相关内容: {snippets}".strip()
+
+            if not combined:
+                return local_results
+
+            logger.info(f"Tavily 返回答案: {answer[:100]}")
+
+            # 用 LLM 从 web 内容中提取结构化信息（不依赖 LLM 自身记忆）
+            from llms.siliconflow_llm import SiliconFlowLLM
+            llm = SiliconFlowLLM()
+            extract_prompt = (
+                f'根据以下网络搜索结果，提取歌词片段 "{lyrics_content}" 所对应的歌曲信息。\n\n'
+                f"{combined}\n\n"
+                "请只返回 JSON，格式：{\"title\": \"歌名\", \"artist\": \"艺术家\", \"confidence\": 0.0}\n"
+                "confidence 含义：0.9+ 非常确定，0.7-0.9 较确定，<0.7 不太确定。\n"
+                "无法确定时返回：{\"title\": null, \"artist\": null, \"confidence\": 0}"
+            )
+            response = llm.invoke_text(
+                "你是信息提取助手，只从给定的搜索结果中提取歌曲名和歌手名，不要凭记忆猜测。",
+                extract_prompt,
+            )
+
+            json_match = re.search(r'\{.*?\}', response, re.DOTALL)
+            if not json_match:
+                logger.warning("Web Search 结果解析失败")
+                return local_results
+
+            extracted = json.loads(json_match.group())
+            title = extracted.get("title")
+            artist = extracted.get("artist")
+            confidence = float(extracted.get("confidence", 0))
 
             if not title or confidence < 0.3:
-                logger.info(f"LLM 识别置信度过低 ({confidence}): {reason}")
+                logger.info(f"Web Search 识别置信度过低 ({confidence})")
                 return local_results
 
-            logger.info(f"LLM 识别结果: {title} - {artist} (confidence={confidence})")
-
-            result = {
+            logger.info(f"Web Search 识别结果: {title} - {artist} (confidence={confidence})")
+            return [{
                 "title": title,
                 "artist": artist or "未知艺术家",
                 "genre": [],
                 "mood": [],
                 "matched_lyrics": lyrics_content,
                 "similarity_score": confidence,
-                "match_type": "llm",
-                "source": "llm_lyrics",
+                "match_type": "web_search",
+                "source": "web_search",
                 "low_confidence": confidence < 0.7,
-                "reason": reason,
-            }
-            return [result]
+            }]
 
         except Exception as e:
-            logger.error(f"LLM 歌词识别失败: {e}")
+            logger.error(f"Web Search 歌词识别失败: {e}")
             return local_results
 
 
