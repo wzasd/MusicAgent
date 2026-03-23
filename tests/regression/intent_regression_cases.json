@@ -1,0 +1,126 @@
+{
+  "version": "1.0",
+  "description": "用户查询 → 意图分类回归用例库。失败的用例手动添加到这里。",
+  "cases": [
+    {
+      "id": "intent_001",
+      "query": "有首歌歌词是后来终于在眼泪中明白",
+      "expected_intent": "search_by_lyrics",
+      "expected_params": {"lyrics": "后来终于在眼泪中明白"},
+      "tags": ["lyrics", "classic"],
+      "added_at": "2026-03-23"
+    },
+    {
+      "id": "intent_002",
+      "query": "我想听周杰伦的歌",
+      "expected_intent": "recommend_by_artist",
+      "expected_params": {"artist": "周杰伦"},
+      "tags": ["artist", "chinese"],
+      "added_at": "2026-03-23"
+    },
+    {
+      "id": "intent_003",
+      "query": "请回答1988的主题曲是什么",
+      "expected_intent": "search_by_theme",
+      "expected_params": {"title": "请回答1988"},
+      "tags": ["theme", "korean_drama"],
+      "added_at": "2026-03-23"
+    },
+    {
+      "id": "intent_004",
+      "query": "泰坦尼克号的主题曲",
+      "expected_intent": "search_by_theme",
+      "expected_params": {"title": "泰坦尼克号", "country": null},
+      "tags": ["theme", "movie", "english"],
+      "added_at": "2026-03-23"
+    },
+    {
+      "id": "intent_005",
+      "query": "推荐一些适合跑步时听的歌",
+      "expected_intent": "recommend_by_activity",
+      "expected_params": {"activity": "running"},
+      "tags": ["activity", "sport"],
+      "added_at": "2026-03-23"
+    },
+    {
+      "id": "intent_006",
+      "query": "有没有关于分手的歌",
+      "expected_intent": "search_by_topic",
+      "expected_params": {"topic": "breakup"},
+      "tags": ["topic", "emotion"],
+      "added_at": "2026-03-23"
+    },
+    {
+      "id": "intent_007",
+      "query": "我今天很开心想听歌",
+      "expected_intent": "recommend_by_mood",
+      "expected_params": {"mood": "happy"},
+      "tags": ["mood", "positive"],
+      "added_at": "2026-03-23"
+    },
+    {
+      "id": "intent_008",
+      "query": "失恋了推荐一些歌",
+      "expected_intent": "recommend_by_mood",
+      "expected_params": {"mood": "sad"},
+      "tags": ["mood", "negative"],
+      "added_at": "2026-03-23"
+    },
+    {
+      "id": "intent_009",
+      "query": "帮我找一首Lady Gaga的歌",
+      "expected_intent": "recommend_by_artist",
+      "expected_params": {"artist": "Lady Gaga"},
+      "tags": ["artist", "english"],
+      "added_at": "2026-03-23"
+    },
+    {
+      "id": "intent_010",
+      "query": "周杰伦的稻香",
+      "expected_intent": "search",
+      "expected_params": {"query": "稻香", "artist": "周杰伦"},
+      "tags": ["search", "chinese"],
+      "added_at": "2026-03-23"
+    },
+    {
+      "id": "intent_011",
+      "query": "关于天空的歌",
+      "expected_intent": "search_by_topic",
+      "expected_params": {"topic": "天空"},
+      "tags": ["topic", "chinese"],
+      "added_at": "2026-03-23"
+    },
+    {
+      "id": "intent_012",
+      "query": "流行歌曲推荐",
+      "expected_intent": "recommend_by_genre",
+      "expected_params": {"genre": "pop"},
+      "tags": ["genre", "chinese"],
+      "added_at": "2026-03-23"
+    },
+    {
+      "id": "intent_013",
+      "query": "燃烧我的卡路里是什么歌",
+      "expected_intent": "search_by_lyrics",
+      "expected_params": {"lyrics": "燃烧我的卡路里"},
+      "tags": ["lyrics", "chinese", "web_fallback"],
+      "added_at": "2026-03-23"
+    },
+    {
+      "id": "intent_014",
+      "query": "晚上学习适合听什么",
+      "expected_intent": "recommend_by_activity",
+      "expected_params": {"activity": "study"},
+      "tags": ["activity", "chinese"],
+      "added_at": "2026-03-23"
+    },
+    {
+      "id": "intent_015",
+      "query": "这首歌是谁唱的：我心永恒",
+      "expected_intent": "search_by_lyrics",
+      "expected_params": {"lyrics": "我心永恒"},
+      "tags": ["lyrics", "chinese"],
+      "added_at": "2026-03-23"
+    }
+  ]
+}
