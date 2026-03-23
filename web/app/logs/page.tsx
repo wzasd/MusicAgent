@@ -56,6 +56,7 @@ export default function LogsPage() {
       search: '歌曲搜索',
       search_by_lyrics: '歌词搜索',
       search_by_theme: '影视主题曲',
+      search_by_topic: '话题搜索',
       recommend_by_mood: '心情推荐',
       recommend_by_activity: '活动推荐',
       recommend_by_genre: '流派推荐',
@@ -65,12 +66,13 @@ export default function LogsPage() {
     return labels[intent] || intent;
   };
 
-  const getSourceType = (source?: string): 'RAG' | 'API' | 'LLM' | 'Web' | 'Theme' | '未找到' => {
+  const getSourceType = (source?: string): 'RAG' | 'API' | 'LLM' | 'Web' | 'Theme' | 'Topic' | '未找到' => {
     if (!source) return 'RAG';
     if (source.includes('not_found')) return '未找到';
     if (source === 'llm_lyrics') return 'LLM';
     if (source === 'web_search') return 'Web';
     if (source === 'theme_web_search') return 'Theme';
+    if (source === 'topic_web_search') return 'Topic';
     if (source === 'spotify' || source === 'mcp') return 'API';
     return 'RAG';
   };
@@ -86,6 +88,7 @@ export default function LogsPage() {
       llm_lyrics: 'LLM · 歌词识别',
       web_search: 'Web · 歌词搜索',
       theme_web_search: 'Web · 影视主题曲',
+      topic_web_search: 'Web · 话题搜索',
       activity_recommendation: 'RAG · 活动场景',
       mood_recommendation: 'RAG · 心情',
     };
@@ -100,6 +103,7 @@ export default function LogsPage() {
       case 'LLM':    return { bg: '#ede9fe', text: '#5b21b6' };
       case 'Web':    return { bg: '#fce7f3', text: '#9d174d' };
       case 'Theme':  return { bg: '#ffedd5', text: '#9a3412' };
+      case 'Topic':  return { bg: '#f0fdf4', text: '#166534' };
       case '未找到': return { bg: '#fef3c7', text: '#92400e' };
       default:       return { bg: '#f3f4f6', text: '#374151' };
     }
@@ -107,7 +111,7 @@ export default function LogsPage() {
 
   const getSearchContent = (log: LogEntry) => {
     const p = log.parameters || {};
-    return p.artist || p.genre || p.lyrics || p.mood || p.activity || p.title || p.query || '-';
+    return p.artist || p.genre || p.lyrics || p.mood || p.activity || p.topic || p.title || p.query || '-';
   };
 
   const getStatusColor = (status: string) => {

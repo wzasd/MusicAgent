@@ -683,6 +683,28 @@ async def search_music(request: SearchRequest):
             )
             songs = search_result.get("songs", [])
             source = search_result.get("source", "unknown")
+        elif intent_type == "search_by_topic":
+            # 话题歌曲搜索
+            topic = parameters.get("topic", original_query)
+            topic_artist = parameters.get("artist")
+            topic_genre = parameters.get("genre")
+            from tools.topic_search import get_topic_search_engine
+            from tools.music_tools import Song
+            topic_engine = get_topic_search_engine()
+            topic_results = await topic_engine.search_by_topic(
+                topic, artist=topic_artist, genre=topic_genre, top_k=request.limit
+            )
+            songs = []
+            for r in topic_results:
+                song = Song(
+                    title=r.get("title", "Unknown"),
+                    artist=r.get("artist", "Unknown Artist"),
+                    popularity=int(r.get("similarity_score", 0.8) * 100),
+                )
+                d = song.to_dict()
+                d["topic"] = r.get("topic", topic)
+                songs.append(d)
+            source = "topic_web_search"
         elif intent_type == "search_by_theme":
             # 影视主题曲搜索
             title = parameters.get("title", original_query)

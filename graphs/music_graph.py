@@ -363,6 +363,8 @@ class MusicRecommendationGraph:
             return "search_by_lyrics"
         elif intent_type == "search_by_theme":
             return "search_by_theme"
+        elif intent_type == "search_by_topic":
+            return "search_by_topic"
         elif intent_type.startswith("create_playlist"):
             # 创建歌单意图，先分析用户偏好
             return "analyze_user_preferences"
@@ -530,6 +532,61 @@ class MusicRecommendationGraph:
                 "agent_status": self._status_tracker.get_status(),
                 "error_log": state.get("error_log", []) + [
                     {"node": "search_by_theme", "error": str(e)}
+                ]
+            }
+
+    @timed("search_by_topic")
+    async def search_by_topic_node(self, state: MusicAgentState) -> Dict[str, Any]:
+        """
+        节点2a-topic: 根据话题/主题词搜索相关歌曲
+        """
+        node_name = "search_by_topic"
+        logger.info(f"--- [步骤 2a-topic] 话题歌曲搜索 ---")
+        self._status_tracker.node_start(node_name)
+
+        parameters = state.get("intent_parameters", {})
+        topic = parameters.get("topic", "")
+        artist = parameters.get("artist")
+        genre = parameters.get("genre")
+
+        try:
+            from tools.topic_search import get_topic_search_engine
+            from tools.music_tools import Song
+
+            engine = get_topic_search_engine()
+            results = await engine.search_by_topic(topic, artist=artist, genre=genre, top_k=10)
+
+            search_results = []
+            for result in results:
+                song = Song(
+                    title=result.get("title", "Unknown"),
+                    artist=result.get("artist", "Unknown Artist"),
+                    popularity=int(result.get("similarity_score", 0.8) * 100),
+                )
+                d = song.to_dict()
+                d["topic"] = result.get("topic", topic)
+                search_results.append(d)
+
+            logger.info(f"话题搜索到 {len(search_results)} 首 (话题='{topic}')")
+            self._status_tracker.node_complete(node_name)
+
+            return {
+                "search_results": search_results,
+                "recommendations": search_results[:5],
+                "step_count": state.get("step_count", 0) + 1,
+                "agent_status": self._status_tracker.get_status(),
+            }
+
+        except Exception as e:
+            logger.error(f"话题歌曲搜索失败: {str(e)}")
+            self._status_tracker.node_complete(node_name, error=str(e))
+            return {
+                "search_results": [],
+                "recommendations": [],
+                "step_count": state.get("step_count", 0) + 1,
+                "agent_status": self._status_tracker.get_status(),
+                "error_log": state.get("error_log", []) + [
+                    {"node": "search_by_topic", "error": str(e)}
                 ]
             }
 
@@ -1038,6 +1095,7 @@ class MusicRecommendationGraph:
         workflow.add_node("search_songs", self.search_songs_node)
         workflow.add_node("search_by_lyrics", self.search_by_lyrics_node)  # 歌词搜索
         workflow.add_node("search_by_theme", self.search_by_theme_node)   # 影视主题曲搜索
+        workflow.add_node("search_by_topic", self.search_by_topic_node)   # 话题歌曲搜索
         workflow.add_node("generate_recommendations", self.generate_recommendations_node)
         workflow.add_node("analyze_user_preferences", self.analyze_user_preferences_node)  # ⭐ NEW
         workflow.add_node("enhanced_recommendations", self.enhanced_recommendations_node)  # ⭐ NEW
@@ -1056,6 +1114,7 @@ class MusicRecommendationGraph:
                 "search_songs": "search_songs",
                 "search_by_lyrics": "search_by_lyrics",  # 歌词搜索
                 "search_by_theme": "search_by_theme",     # 影视主题曲搜索
+                "search_by_topic": "search_by_topic",     # 话题歌曲搜索
                 "generate_recommendations": "generate_recommendations",
                 "analyze_user_preferences": "analyze_user_preferences",  # ⭐ NEW
                 "general_chat": "general_chat"
@@ -1086,6 +1145,7 @@ class MusicRecommendationGraph:
         workflow.add_edge("search_songs", "generate_explanation")
         workflow.add_edge("search_by_lyrics", "generate_explanation")  # 歌词搜索后生成解释
         workflow.add_edge("search_by_theme", "generate_explanation")   # 主题曲搜索后生成解释
+        workflow.add_edge("search_by_topic", "generate_explanation")   # 话题搜索后生成解释
         workflow.add_edge("generate_recommendations", "generate_explanation")
         
         # 创建播放列表后生成解释
