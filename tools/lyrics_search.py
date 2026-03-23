@@ -9,6 +9,8 @@ from typing import Dict, List, Optional, Any
 from difflib import SequenceMatcher
 
 from config.logging_config import get_logger
+from tools.multilingual_search import MultilingualSearchBuilder
+from tools.web_search_cache import get_cached_search, set_cached_search
 
 logger = get_logger(__name__)
 
@@ -201,10 +203,16 @@ class LyricsSearchEngine:
                 r["source"] = "lyrics_db"
             return local_results
 
-        # Step 2: Tavily Web Search 兜底
+        # Step 2: 检查缓存
         lyrics_content = self.extract_lyrics_content(query)
         if not lyrics_content:
             lyrics_content = query
+
+        cache_key = lyrics_content[:100]  # 限制缓存键长度
+        cached = await get_cached_search(cache_key, "lyrics")
+        if cached:
+            logger.info(f"歌词搜索缓存命中: '{lyrics_content[:30]}...'")
+            return cached[:top_k]
 
         logger.info(f"本地未命中，使用 Web Search 识别歌词: '{lyrics_content}'")
 
@@ -218,19 +226,20 @@ class LyricsSearchEngine:
                 logger.warning("Tavily API Key 未配置，跳过 Web Search")
                 return local_results
 
-            search_query = f'"{lyrics_content}" 歌名 歌手 这首歌叫什么'
+            # 使用多语言搜索构建器构建搜索参数
+            search_params = MultilingualSearchBuilder.build_tavily_params(
+                "lyrics", lyrics=lyrics_content
+            )
+
             async with aiohttp.ClientSession() as session:
                 async with session.post(
                     "https://api.tavily.com/search",
                     json={
                         "api_key": api_key,
-                        "query": search_query,
-                        "search_depth": "basic",
-                        "include_answer": True,
-                        "max_results": 5,
+                        **search_params,
                     },
                     headers={"Content-Type": "application/json"},
-                    timeout=aiohttp.ClientTimeout(total=10),
+                    timeout=aiohttp.ClientTimeout(total=15),
                 ) as resp:
                     if resp.status != 200:
                         logger.error(f"Tavily 请求失败: {resp.status}")
@@ -238,10 +247,13 @@ class LyricsSearchEngine:
                     data = await resp.json()
 
             answer = data.get("answer", "")
+            # 增加结果数到10，使用更多来源
+            results_list = data.get("results", [])
             snippets = "\n".join(
-                r.get("content", "")[:300] for r in data.get("results", [])[:3]
+                f"[{i+1}] {r.get('content', '')[:350]}"
+                for i, r in enumerate(results_list[:8])
             )
-            combined = f"搜索答案: {answer}\n\n相关内容: {snippets}".strip()
+            combined = f"搜索答案: {answer}\n\n相关内容:\n{snippets}".strip()
 
             if not combined:
                 return local_results
@@ -254,12 +266,22 @@ class LyricsSearchEngine:
             extract_prompt = (
                 f'根据以下网络搜索结果，提取歌词片段 "{lyrics_content}" 所对应的歌曲信息。\n\n'
                 f"{combined}\n\n"
-                "请只返回 JSON，格式：{\"title\": \"歌名\", \"artist\": \"艺术家\", \"confidence\": 0.0}\n"
-                "confidence 含义：0.9+ 非常确定，0.7-0.9 较确定，<0.7 不太确定。\n"
-                "无法确定时返回：{\"title\": null, \"artist\": null, \"confidence\": 0}"
+                f"【提取规则】\n"
+                f"1. 歌词片段必须在搜索结果的歌曲信息中被提及\n"
+                f"2. 优先匹配搜索结果中明确提到该歌词的歌曲\n"
+                f"3. 如果搜索结果提到多个可能的歌曲，选择最匹配的那个\n"
+                f"4. 如果无法确定，返回空值\n\n"
+                f"【输出格式】\n"
+                '请只返回 JSON，格式：{"title": "歌名", "artist": "艺术家", "confidence": 0.0, "source_snippet": "来源简述"}\n\n'
+                f"confidence 评分标准：\n"
+                f"- 0.9-1.0: 搜索结果明确显示该歌词属于某首歌，且歌名歌手完整\n"
+                f"- 0.7-0.89: 搜索结果提到该歌词对应的歌曲，但信息不够详细\n"
+                f"- 0.5-0.69: 有相关信息但不够确定\n"
+                f"- <0.5: 无法确定或搜索结果不匹配\n\n"
+                f"无法确定时返回：{{\"title\": null, \"artist\": null, \"confidence\": 0}}"
             )
             response = llm.invoke_text(
-                "你是信息提取助手，只从给定的搜索结果中提取歌曲名和歌手名，不要凭记忆猜测。",
+                "你是专业的歌词识别助手，擅长通过歌词片段识别歌曲。只使用给定的搜索结果，不要凭记忆猜测。",
                 extract_prompt,
             )
 
@@ -278,7 +300,8 @@ class LyricsSearchEngine:
                 return local_results
 
             logger.info(f"Web Search 识别结果: {title} - {artist} (confidence={confidence})")
-            return [{
+
+            result = [{
                 "title": title,
                 "artist": artist or "未知艺术家",
                 "genre": [],
@@ -289,6 +312,11 @@ class LyricsSearchEngine:
                 "source": "web_search",
                 "low_confidence": confidence < 0.7,
             }]
+
+            # 保存到缓存
+            await set_cached_search(cache_key, "lyrics", result)
+
+            return result
 
         except Exception as e:
             logger.error(f"Web Search 歌词识别失败: {e}")

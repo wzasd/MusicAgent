@@ -66,13 +66,16 @@ export default function LogsPage() {
     return labels[intent] || intent;
   };
 
-  const getSourceType = (source?: string): 'RAG' | 'API' | 'LLM' | 'Web' | 'Theme' | 'Topic' | '未找到' => {
+  const getSourceType = (source?: string): 'RAG' | 'API' | 'LLM' | 'Web' | 'Theme' | 'Topic' | 'Artist' | 'Local' | 'Mixed' | '未找到' => {
     if (!source) return 'RAG';
     if (source.includes('not_found')) return '未找到';
     if (source === 'llm_lyrics') return 'LLM';
     if (source === 'web_search') return 'Web';
     if (source === 'theme_web_search') return 'Theme';
     if (source === 'topic_web_search') return 'Topic';
+    if (source === 'artist_web_search') return 'Artist';
+    if (source === 'local_db') return 'Local';
+    if (source === 'mixed') return 'Mixed';
     if (source === 'spotify' || source === 'mcp') return 'API';
     return 'RAG';
   };
@@ -82,6 +85,10 @@ export default function LogsPage() {
       rag_chroma: 'RAG · 语义搜索',
       artist_metadata: 'RAG · 艺术家',
       artist_not_found: '未找到',
+      artist_web_search: 'Web · 艺术家',
+      local_db: '本地 · 艺术家',
+      chroma_db: 'Chroma · 艺术家',
+      mixed: '混合 · 艺术家',
       genre_search: 'RAG · 流派',
       genre_not_found: '未找到',
       lyrics_db: 'RAG · 歌词库',
@@ -104,6 +111,9 @@ export default function LogsPage() {
       case 'Web':    return { bg: '#fce7f3', text: '#9d174d' };
       case 'Theme':  return { bg: '#ffedd5', text: '#9a3412' };
       case 'Topic':  return { bg: '#f0fdf4', text: '#166534' };
+      case 'Artist': return { bg: '#e0f2fe', text: '#0369a1' };
+      case 'Local':  return { bg: '#fef9c3', text: '#854d0e' };
+      case 'Mixed':  return { bg: '#f3e8ff', text: '#7c3aed' };
       case '未找到': return { bg: '#fef3c7', text: '#92400e' };
       default:       return { bg: '#f3f4f6', text: '#374151' };
     }
@@ -111,7 +121,11 @@ export default function LogsPage() {
 
   const getSearchContent = (log: LogEntry) => {
     const p = log.parameters || {};
-    return p.artist || p.genre || p.lyrics || p.mood || p.activity || p.topic || p.title || p.query || '-';
+    // 影视主题曲搜索显示 country + title
+    if (p.title) {
+      return p.country ? `${p.country}《${p.title}》` : `《${p.title}》`;
+    }
+    return p.artist || p.genre || p.lyrics || p.mood || p.activity || p.topic || p.query || '-';
   };
 
   const getStatusColor = (status: string) => {

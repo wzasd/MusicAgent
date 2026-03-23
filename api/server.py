@@ -708,10 +708,11 @@ async def search_music(request: SearchRequest):
         elif intent_type == "search_by_theme":
             # 影视主题曲搜索
             title = parameters.get("title", original_query)
+            country = parameters.get("country")
             from tools.theme_search import get_theme_search_engine
             from tools.music_tools import Song
             theme_engine = get_theme_search_engine()
-            theme_results = await theme_engine.search_by_title(title, top_k=request.limit)
+            theme_results = await theme_engine.search_by_title(title, country=country, top_k=request.limit)
             songs = []
             for r in theme_results:
                 song = Song(
@@ -736,15 +737,15 @@ async def search_music(request: SearchRequest):
             songs = search_result.get("songs", [])
             source = search_result.get("source", "unknown")
         elif intent_type == "recommend_by_artist":
-            # 艺术家搜索：用元数据精确匹配，不做语义搜索
+            # 艺术家搜索：用元数据精确匹配 -> ChromaDB -> Web Search
             artist_name = parameters.get("artist") or original_query
-            artist_songs = await search_tool.get_songs_by_artist(artist_name, limit=request.limit)
+            artist_songs, artist_source = await search_tool.get_songs_by_artist(artist_name, limit=request.limit)
             if artist_songs:
-                songs = [s.to_dict() for s in artist_songs]
-                source = "artist_metadata"
+                songs = [s.to_dict(source=artist_source) for s in artist_songs]
+                source = artist_source  # 使用实际的数据源：local_db / chroma_db / artist_web_search
             else:
                 songs = []
-                source = "artist_not_found"
+                source = artist_source  # not_found 或 error
         elif intent_type == "recommend_by_genre":
             # 流派搜索
             genre_name = parameters.get("genre") or original_query

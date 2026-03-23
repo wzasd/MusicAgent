@@ -7,6 +7,7 @@ import asyncio
 import aiohttp
 import json
 import os
+import re
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 from dataclasses import dataclass, asdict
@@ -37,9 +38,12 @@ class Song:
     preview_url: Optional[str] = None  # 试听链接
     spotify_id: Optional[str] = None  # Spotify ID
     
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self, source: Optional[str] = None) -> Dict[str, Any]:
         """转换为字典"""
-        return asdict(self)
+        d = asdict(self)
+        if source:
+            d["source"] = source
+        return d
 
 
 @dataclass
@@ -602,43 +606,205 @@ class MusicSearchTool:
             logger.error(f"按流派获取歌曲失败: {str(e)}")
             return []
 
-    async def get_songs_by_artist(self, artist: str, limit: int = 10) -> List[Song]:
+    async def get_songs_by_artist(self, artist: str, limit: int = 10) -> tuple[List[Song], str]:
         """
-        根据艺术家获取歌曲，优先本地DB，本地无结果时使用RAG V2搜索
+        根据艺术家获取歌曲，混合模式：本地DB + ChromaDB + Web Search
+
+        策略：
+        1. 先收集本地和ChromaDB的结果（这些是高质量数据）
+        2. 如果数量不足，用Web Search补充
+        3. 合并去重后返回，标记为混合来源
+
+        Returns:
+            (歌曲列表, 数据来源) 元组
+            数据来源: "local_db" | "chroma_db" | "artist_web_search" | "mixed" | "not_found"
         """
         try:
-            logger.info(f"按艺术家获取歌曲: artist='{artist}'")
+            logger.info(f"按艺术家获取歌曲(混合模式): artist='{artist}'")
 
-            results = [
+            all_songs: List[Song] = []
+            sources_used = []
+
+            # Step 1: 本地内存数据库
+            local_results = [
                 song for song in self.music_db
                 if artist.lower() in song.artist.lower()
             ]
-            results.sort(key=lambda x: x.year or 0, reverse=True)
+            local_results.sort(key=lambda x: x.year or 0, reverse=True)
+            if local_results:
+                logger.info(f"本地DB找到 {len(local_results)} 首 {artist} 的歌曲")
+                all_songs.extend(local_results)
+                sources_used.append("local")
 
-            if results:
-                return results[:limit]
-
-            # 本地DB无结果，使用ChromaDB元数据精确查找
-            logger.info(f"本地DB无{artist}结果，使用ChromaDB元数据查找")
+            # Step 2: ChromaDB元数据查找（即使本地有，也补充ChromaDB的）
             from tools.rag_music_search_v2 import get_rag_music_search_v2
             rag_search = get_rag_music_search_v2()
-            rag_results = rag_search.vector_store.get_by_artist(artist, top_k=limit)
-            if not rag_results:
-                logger.info(f"ChromaDB 中未找到艺术家: {artist}")
-                return []
-            return [
-                Song(
-                    title=r["title"],
-                    artist=r["artist"],
-                    genre=r.get("genre", "") if isinstance(r.get("genre"), str) else ((r.get("genre") or [""])[0]),
-                    duration=r.get("duration") or 0,
-                    popularity=int(r.get("similarity_score", 0.8) * 100),
-                )
-                for r in rag_results
-            ]
+            rag_results = rag_search.vector_store.get_by_artist(artist, top_k=limit * 2)
+            if rag_results:
+                logger.info(f"ChromaDB 中找到 {len(rag_results)} 首 {artist} 的歌曲")
+                chroma_songs = [
+                    Song(
+                        title=r["title"],
+                        artist=r["artist"],
+                        genre=r.get("genre", "") if isinstance(r.get("genre"), str) else ((r.get("genre") or [""])[0]),
+                        duration=r.get("duration") or 0,
+                        popularity=int(r.get("similarity_score", 0.8) * 100),
+                    )
+                    for r in rag_results
+                ]
+                all_songs.extend(chroma_songs)
+                if "chroma" not in sources_used:
+                    sources_used.append("chroma")
+
+            # Step 3: 去重（按歌名+艺术家）
+            seen = set()
+            unique_songs = []
+            for song in all_songs:
+                key = (song.title.lower(), song.artist.lower())
+                if key not in seen:
+                    seen.add(key)
+                    unique_songs.append(song)
+
+            # Step 4: 如果数量不足，用Web Search补充
+            remaining_slots = limit - len(unique_songs)
+            if remaining_slots > 0:
+                logger.info(f"本地/ChromaDB共 {len(unique_songs)} 首，需要补充 {remaining_slots} 首")
+                web_results = await self._search_artist_by_web(artist, limit=remaining_slots)
+                if web_results:
+                    logger.info(f"Web Search 补充 {len(web_results)} 首 {artist} 的歌曲")
+                    # 去重：只添加本地/ChromaDB中没有的
+                    for song in web_results:
+                        key = (song.title.lower(), song.artist.lower())
+                        if key not in seen:
+                            seen.add(key)
+                            unique_songs.append(song)
+                    sources_used.append("web")
+
+            if unique_songs:
+                # 确定来源标签
+                if len(sources_used) == 1:
+                    source_map = {
+                        "local": "local_db",
+                        "chroma": "chroma_db",
+                        "web": "artist_web_search"
+                    }
+                    source_label = source_map.get(sources_used[0], "mixed")
+                else:
+                    source_label = "mixed"
+
+                logger.info(f"混合搜索完成: {len(unique_songs)} 首 (来源: {source_label})")
+                return unique_songs[:limit], source_label
+
+            logger.warning(f"所有数据源均未找到艺术家: {artist}")
+            return [], "not_found"
 
         except Exception as e:
             logger.error(f"按艺术家获取歌曲失败: {str(e)}")
+            return [], "error"
+
+    async def _search_artist_by_web(self, artist: str, limit: int = 10) -> List[Song]:
+        """
+        使用 Web Search 搜索艺术家歌曲（兜底方案）
+        """
+        try:
+            from config.settings_loader import load_settings_from_json
+            import aiohttp
+
+            settings = load_settings_from_json()
+            api_key = settings.get("TAILYAPI_API_KEY", "")
+            if not api_key:
+                logger.warning("Tavily API Key 未配置，无法使用 Web Search")
+                return []
+
+            # 构建搜索查询
+            search_query = f'{artist} 热门歌曲 popular songs "{artist}" best hits'
+
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    "https://api.tavily.com/search",
+                    json={
+                        "api_key": api_key,
+                        "query": search_query,
+                        "search_depth": "advanced",
+                        "include_answer": True,
+                        "max_results": 8,
+                    },
+                    headers={"Content-Type": "application/json"},
+                    timeout=aiohttp.ClientTimeout(total=10),
+                ) as resp:
+                    if resp.status != 200:
+                        logger.error(f"Tavily 请求失败: {resp.status}")
+                        return []
+                    data = await resp.json()
+
+            answer = data.get("answer", "")
+            results_list = data.get("results", [])
+
+            snippets = "\n".join(
+                f"[{i+1}] {r.get('content', '')[:400]}"
+                for i, r in enumerate(results_list[:6])
+            )
+            combined = f"搜索答案: {answer}\n\n相关内容:\n{snippets}".strip()
+
+            if not combined:
+                return []
+
+            logger.info(f"Web Search 返回关于 {artist} 的内容")
+
+            # 使用 LLM 提取歌曲列表
+            from llms.siliconflow_llm import SiliconFlowLLM
+            llm = SiliconFlowLLM()
+            extract_prompt = (
+                f'根据以下网络搜索结果，提取歌手"{artist}"的热门歌曲列表。\n\n'
+                f"{combined}\n\n"
+                f"【提取规则】\n"
+                f"1. 只提取该歌手的热门/知名歌曲，不要猜测\n"
+                f"2. 优先提取搜索结果中明确推荐的歌曲\n"
+                f"3. 如果搜索结果提到歌曲列表，优先提取列表中的歌曲\n"
+                f"4. 歌名必须与搜索结果一致\n"
+                f"5. 如果没有找到任何歌曲，必须返回空数组 []\n\n"
+                f"【输出格式】\n"
+                f'请只返回 JSON 数组（最多 {limit} 首），格式：\n'
+                '[{"title": "歌名", "confidence": 0.9}]\n\n'
+                f"confidence 评分标准：\n"
+                f"- 0.9-1.0: 搜索结果明确推荐该歌曲是{artist}的热门歌曲\n"
+                f"- 0.7-0.89: 搜索结果提到该歌曲是{artist}的歌曲\n"
+                f"- 0.5-0.69: 歌曲被提及但不确定是否热门\n"
+                f"- <0.5: 不确定\n\n"
+                f"重要：只从给定的搜索结果中提取，不要凭记忆猜测。只返回纯JSON数组，不要包含其他文字。"
+            )
+            response = llm.invoke_text(
+                f"你是专业的音乐信息提取助手，擅长从搜索结果中提取歌手的热门歌曲。只使用给定的搜索结果，不要凭记忆猜测。",
+                extract_prompt,
+            )
+
+            # 解析 JSON
+            json_match = re.search(r'\[.*?\]', response, re.DOTALL)
+            if not json_match:
+                logger.warning(f"Web Search 提取 {artist} 歌曲失败")
+                return []
+
+            songs_raw = json.loads(json_match.group())
+            results = []
+            for item in songs_raw:
+                song_title = item.get("title")
+                confidence = float(item.get("confidence", 0))
+
+                if not song_title or confidence < 0.5:
+                    continue
+
+                results.append(Song(
+                    title=song_title,
+                    artist=artist,
+                    genre="",
+                    duration=0,
+                    popularity=int(confidence * 100),
+                ))
+
+            return results
+
+        except Exception as e:
+            logger.error(f"Web Search 搜索艺术家歌曲失败: {e}")
             return []
     
     async def get_similar_songs(self, song_title: str, artist: str, limit: int = 5) -> List[Song]:

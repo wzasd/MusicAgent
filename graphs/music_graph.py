@@ -492,13 +492,14 @@ class MusicRecommendationGraph:
 
         parameters = state.get("intent_parameters", {})
         title = parameters.get("title", "")
+        country = parameters.get("country")
 
         try:
             from tools.theme_search import get_theme_search_engine
             from tools.music_tools import Song
 
             engine = get_theme_search_engine()
-            results = await engine.search_by_title(title, top_k=10)
+            results = await engine.search_by_title(title, country=country, top_k=10)
 
             search_results = []
             for result in results:
@@ -630,9 +631,9 @@ class MusicRecommendationGraph:
 
             elif intent_type == "recommend_by_artist":
                 artist = parameters.get("artist", "")
-                songs = await search_tool.get_songs_by_artist(artist, limit=5)
+                songs, artist_source = await search_tool.get_songs_by_artist(artist, limit=5)
                 recommendations = [{
-                    "song": song.to_dict(),
+                    "song": song.to_dict(source=artist_source),
                     "reason": f"{artist}的经典作品",
                     "similarity_score": 0.9
                 } for song in songs]
