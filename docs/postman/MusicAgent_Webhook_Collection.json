@@ -1,0 +1,249 @@
+{
+  "info": {
+    "name": "Music Agent Webhook API Collection",
+    "description": "Postman collection for testing Music Agent webhook API",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Single Turn - Direct Search",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"I want to listen to Hotel California\"\n    }\n  ],\n  \"stream\": false,\n  \"sessionId\": \"postman_test_001\"\n}"
+        },
+        "url": {
+          "raw": "http://159.75.160.65:8501/webhook/MusicAgent",
+          "protocol": "http",
+          "host": ["159", "75", "160", "65"],
+          "port": "8501",
+          "path": ["webhook", "MusicAgent"]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Single Turn - Artist List",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What are some popular songs by Taylor Swift\"\n    }\n  ],\n  \"stream\": false,\n  \"sessionId\": \"postman_test_002\"\n}"
+        },
+        "url": {
+          "raw": "http://159.75.160.65:8501/webhook/MusicAgent",
+          "protocol": "http",
+          "host": ["159", "75", "160", "65"],
+          "port": "8501",
+          "path": ["webhook", "MusicAgent"]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Multi Turn - Round 1 (Query List)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Recommend some songs for running\"\n    }\n  ],\n  \"stream\": false,\n  \"sessionId\": \"postman_multi_turn_001\"\n}"
+        },
+        "url": {
+          "raw": "http://159.75.160.65:8501/webhook/MusicAgent",
+          "protocol": "http",
+          "host": ["159", "75", "160", "65"],
+          "port": "8501",
+          "path": ["webhook", "MusicAgent"]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Multi Turn - Round 2 (Select First)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Recommend some songs for running\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": \"Here are some songs for running:\\n1. 'Eye of the Tiger' by Survivor\\n2. 'Stronger' by Kanye West\\n3. 'Can't Hold Us' by Macklemore\\n\\nPlease tell me which one you'd like to play?\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"the first one\"\n    }\n  ],\n  \"stream\": false,\n  \"sessionId\": \"postman_multi_turn_001\"\n}"
+        },
+        "url": {
+          "raw": "http://159.75.160.65:8501/webhook/MusicAgent",
+          "protocol": "http",
+          "host": ["159", "75", "160", "65"],
+          "port": "8501",
+          "path": ["webhook", "MusicAgent"]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Multi Turn - Round 2 (Select Second)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Recommend some songs for running\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": \"Here are some songs for running:\\n1. 'Eye of the Tiger' by Survivor\\n2. 'Stronger' by Kanye West\\n3. 'Can't Hold Us' by Macklemore\\n\\nPlease tell me which one you'd like to play?\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"the second one\"\n    }\n  ],\n  \"stream\": false,\n  \"sessionId\": \"postman_multi_turn_001\"\n}"
+        },
+        "url": {
+          "raw": "http://159.75.160.65:8501/webhook/MusicAgent",
+          "protocol": "http",
+          "host": ["159", "75", "160", "65"],
+          "port": "8501",
+          "path": ["webhook", "MusicAgent"]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Multi Turn - Round 2 (Play It)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Songs by Ed Sheeran\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": \"Songs by Ed Sheeran:\\n1. 'Shape of You' by Ed Sheeran\\n2. 'Perfect' by Ed Sheeran\\n3. 'Thinking Out Loud' by Ed Sheeran\\n\\nPlease tell me which one you'd like to play?\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"play it\"\n    }\n  ],\n  \"stream\": false,\n  \"sessionId\": \"postman_multi_turn_002\"\n}"
+        },
+        "url": {
+          "raw": "http://159.75.160.65:8501/webhook/MusicAgent",
+          "protocol": "http",
+          "host": ["159", "75", "160", "65"],
+          "port": "8501",
+          "path": ["webhook", "MusicAgent"]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Lyrics Search",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"I want to hear the song with the lyric 'Every night in my dreams'\"\n    }\n  ],\n  \"stream\": false,\n  \"sessionId\": \"postman_lyrics_001\"\n}"
+        },
+        "url": {
+          "raw": "http://159.75.160.65:8501/webhook/MusicAgent",
+          "protocol": "http",
+          "host": ["159", "75", "160", "65"],
+          "port": "8501",
+          "path": ["webhook", "MusicAgent"]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Mood Recommendation",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Play some relaxing music\"\n    }\n  ],\n  \"stream\": false,\n  \"sessionId\": \"postman_mood_001\"\n}"
+        },
+        "url": {
+          "raw": "http://159.75.160.65:8501/webhook/MusicAgent",
+          "protocol": "http",
+          "host": ["159", "75", "160", "65"],
+          "port": "8501",
+          "path": ["webhook", "MusicAgent"]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Activity Recommendation",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Music for studying\"\n    }\n  ],\n  \"stream\": false,\n  \"sessionId\": \"postman_activity_001\"\n}"
+        },
+        "url": {
+          "raw": "http://159.75.160.65:8501/webhook/MusicAgent",
+          "protocol": "http",
+          "host": ["159", "75", "160", "65"],
+          "port": "8501",
+          "path": ["webhook", "MusicAgent"]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "General Chat",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What's the weather today?\"\n    }\n  ],\n  \"stream\": false,\n  \"sessionId\": \"postman_chat_001\"\n}"
+        },
+        "url": {
+          "raw": "http://159.75.160.65:8501/webhook/MusicAgent",
+          "protocol": "http",
+          "host": ["159", "75", "160", "65"],
+          "port": "8501",
+          "path": ["webhook", "MusicAgent"]
+        }
+      },
+      "response": []
+    }
+  ]
+}
