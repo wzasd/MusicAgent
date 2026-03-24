@@ -1,6 +1,6 @@
 """
-多轮对话回归测试
-测试 webhook 的上下文保持和指代消解能力
+Multi-turn Conversation Regression Tests
+Tests webhook context persistence and anaphora resolution capabilities
 """
 import pytest
 import asyncio
@@ -17,44 +17,43 @@ from api.webhook_handler import (
 )
 
 
-# ========== 多轮对话测试用例 ==========
+# ========== Multi-turn Conversation Test Cases ==========
 
 MULTI_TURN_TEST_CASES = [
     {
         "id": "multi_turn_001",
-        "name": "列表选择 - 第一首",
-        "description": "用户先查询列表，然后选择第一首播放",
+        "name": "List Selection - First Song",
+        "description": "User queries list, then selects first song to play",
         "turns": [
             {
                 "role": "user",
-                "content": "周杰伦有哪些代表作",
+                "content": "What are some popular songs by Taylor Swift",
                 "expected_intent": "recommend_by_artist",
                 "expected_action_type": "list",
             },
             {
                 "role": "user",
-                "content": "第一首",
-                "expected_intent": "search",  # 选择后转为search
+                "content": "the first one",
+                "expected_intent": "search",
                 "expected_action_type": "play",
-                # 不指定具体歌曲，只要播放周杰伦的歌即可
-                "expected_artist": "周杰伦",
+                "expected_artist": "Taylor Swift",
             }
         ]
     },
     {
         "id": "multi_turn_002",
-        "name": "列表选择 - 第二首",
-        "description": "用户先查询列表，然后选择第二首播放",
+        "name": "List Selection - Second Song",
+        "description": "User queries list, then selects second song to play",
         "turns": [
             {
                 "role": "user",
-                "content": "推荐几首适合跑步的歌",
+                "content": "Recommend some songs for running",
                 "expected_intent": "recommend_by_activity",
                 "expected_action_type": "list",
             },
             {
                 "role": "user",
-                "content": "第二首",
+                "content": "the second one",
                 "expected_intent": "search",
                 "expected_action_type": "play",
             }
@@ -62,18 +61,18 @@ MULTI_TURN_TEST_CASES = [
     },
     {
         "id": "multi_turn_003",
-        "name": "列表选择 - 最后一首",
-        "description": "用户选择列表中的最后一首",
+        "name": "List Selection - Last Song",
+        "description": "User selects the last song from list",
         "turns": [
             {
                 "role": "user",
-                "content": "推荐几首开心的歌",
+                "content": "Recommend some happy songs",
                 "expected_intent": "recommend_by_mood",
                 "expected_action_type": "list",
             },
             {
                 "role": "user",
-                "content": "最后一首",
+                "content": "the last one",
                 "expected_intent": "search",
                 "expected_action_type": "play",
             }
@@ -81,18 +80,37 @@ MULTI_TURN_TEST_CASES = [
     },
     {
         "id": "multi_turn_004",
-        "name": "指代消解 - 播放它",
-        "description": "用户使用指代词选择歌曲",
+        "name": "Anaphora Resolution - Play It",
+        "description": "User uses anaphora 'play it' to select a song",
         "turns": [
             {
                 "role": "user",
-                "content": "我想听陈奕迅的歌",
+                "content": "I want to hear some songs by Ed Sheeran",
                 "expected_intent": "recommend_by_artist",
                 "expected_action_type": "list",
             },
             {
                 "role": "user",
-                "content": "播放它",
+                "content": "play it",
+                "expected_intent": "search",
+                "expected_action_type": "play",
+            }
+        ]
+    },
+    {
+        "id": "multi_turn_005",
+        "name": "Anaphora Resolution - This One",
+        "description": "User uses 'this one' to select a song",
+        "turns": [
+            {
+                "role": "user",
+                "content": "Songs by The Beatles",
+                "expected_intent": "recommend_by_artist",
+                "expected_action_type": "list",
+            },
+            {
+                "role": "user",
+                "content": "this one",
                 "expected_intent": "search",
                 "expected_action_type": "play",
             }
@@ -106,10 +124,10 @@ MULTI_TURN_TEST_CASES = [
 @pytest.mark.multi_turn
 @pytest.mark.asyncio
 class TestMultiTurnConversation:
-    """多轮对话测试类"""
+    """Multi-turn conversation test class"""
 
     async def _extract_stream_content(self, response_chunks: List[str]) -> Dict[str, Any]:
-        """从SSE流中提取内容"""
+        """Extract content from SSE stream"""
         full_content = ""
         final_action = None
         has_error = False
@@ -140,31 +158,31 @@ class TestMultiTurnConversation:
     @pytest.mark.parametrize("test_case", MULTI_TURN_TEST_CASES, ids=lambda x: x["id"])
     async def test_multi_turn_conversation(self, test_case: Dict[str, Any]):
         """
-        测试多轮对话场景
+        Test multi-turn conversation scenarios
 
-        流程:
-        1. 第一轮：发送查询，获取列表
-        2. 保存 session_id 和上下文
-        3. 第二轮：使用相同 session_id 发送选择指令
-        4. 验证是否正确识别指代并播放
+        Flow:
+        1. Round 1: Send query, get list
+        2. Save session_id and context
+        3. Round 2: Send selection command with same session_id
+        4. Verify anaphora resolution and playback
         """
         session_id = f"test_session_{test_case['id']}"
         messages: List[Dict[str, str]] = []
         last_results: List[Dict[str, Any]] = None
 
         print(f"\n{'='*70}")
-        print(f"多轮对话测试: [{test_case['id']}] {test_case['name']}")
-        print(f"描述: {test_case['description']}")
+        print(f"Multi-turn Test: [{test_case['id']}] {test_case['name']}")
+        print(f"Description: {test_case['description']}")
         print(f"{'='*70}")
 
         for i, turn in enumerate(test_case["turns"], 1):
             print(f"\n--- Turn {i} ---")
-            print(f"用户: {turn['content']}")
+            print(f"User: {turn['content']}")
 
-            # 添加用户消息到历史
+            # Add user message to history
             messages.append({"role": "user", "content": turn["content"]})
 
-            # 构建请求
+            # Build request
             request = MusicAgentWebhookRequest(
                 model="test",
                 stream=True,
@@ -172,69 +190,65 @@ class TestMultiTurnConversation:
                 sessionId=session_id,
             )
 
-            # 收集流式响应
+            # Collect streaming response
             chunks = []
             async for chunk in handle_music_agent_webhook(request):
                 chunks.append(chunk)
 
-            # 解析响应
+            # Parse response
             result = await self._extract_stream_content(chunks)
 
             if result["has_error"]:
-                pytest.fail(f"Turn {i} 发生错误: {result['error_message']}")
+                pytest.fail(f"Turn {i} error: {result['error_message']}")
 
-            print(f"系统: {result['content']}")
+            print(f"System: {result['content']}")
 
-            # 第一轮：验证返回列表并保存结果
+            # Round 1: Verify list returned and save results
             if i == 1:
-                # 验证是列表模式（没有action或action为空）
-                # 注意：当前实现如果是明确查询单首歌，即使是artist查询也可能直接播放
-                # 这里主要验证是否有结果返回
+                # Verify list mode (no action or empty action)
                 assert "Found" in result["content"] or "Songs" in result["content"] or \
                        "Recommending" in result["content"] or "Finding" in result["content"], \
-                    f"第一轮应该返回列表，实际: {result['content']}"
+                    f"Round 1 should return list, actual: {result['content']}"
 
-                # 从响应内容中解析歌曲列表（简化处理）
-                # 实际应该从上下文获取，这里我们依赖服务端保存的 last_search_results
-
-            # 第二轮：验证选择并播放
+            # Round 2: Verify selection and playback
             elif i == 2:
-                # 验证有播放action
+                # Verify playback action
                 assert result["action"] is not None, \
-                    f"第二轮应该有播放action，实际: {result}"
+                    f"Round 2 should have playback action, actual: {result}"
 
                 action_name = result["action"][0]["header"]["name"]
                 assert action_name == "PLAY_SEARCH_SONG", \
-                    f"action应该是PLAY_SEARCH_SONG，实际是: {action_name}"
+                    f"action should be PLAY_SEARCH_SONG, actual: {action_name}"
 
-                # 验证播放了具体的歌曲
+                # Verify specific song played
                 slots = result["action"][0]["payload"]["callParams"]["forwardSlot"]
                 song_name = next((s["value"][0] for s in slots if s["key"] == "songName"), None)
                 artist = next((s["value"][0] for s in slots if s["key"] == "artist"), None)
 
-                print(f"播放: {song_name} - {artist}")
-                assert song_name is not None, "应该播放具体的歌曲"
+                print(f"Playing: {song_name} - {artist}")
+                assert song_name is not None, "Should play a specific song"
 
-                # 如果有预期歌曲，验证
-                if "expected_contains" in turn:
-                    assert turn["expected_contains"] in song_name or song_name in turn["expected_contains"], \
-                        f"预期播放包含 '{turn['expected_contains']}' 的歌曲，实际: {song_name}"
+                # If expected artist, verify
+                if "expected_artist" in turn:
+                    assert turn["expected_artist"].lower() in artist.lower() or \
+                           artist.lower() in turn["expected_artist"].lower(), \
+                        f"Expected artist '{turn['expected_artist']}', actual: {artist}"
 
         print(f"\n{'='*70}")
-        print(f"✅ 测试通过: [{test_case['id']}] {test_case['name']}")
+        print(f"✅ Test Passed: [{test_case['id']}] {test_case['name']}")
         print(f"{'='*70}")
 
     async def test_session_context_persistence(self):
         """
-        测试会话上下文是否正确保持
+        Test session context persistence
         """
         session_id = "test_session_persistence"
 
-        # 第一轮：查询
+        # Round 1: Query
         request1 = MusicAgentWebhookRequest(
             model="test",
             stream=True,
-            messages=[WebhookMessage(role="user", content="Taylor Swift的歌")],
+            messages=[WebhookMessage(role="user", content="Songs by Ed Sheeran")],
             sessionId=session_id,
         )
 
@@ -242,26 +256,26 @@ class TestMultiTurnConversation:
         async for chunk in handle_music_agent_webhook(request1):
             chunks1.append(chunk)
 
-        # 获取会话管理器并验证上下文存在
+        # Get session manager and verify context exists
         session_manager = get_session_manager()
         context1 = session_manager.get_or_create_context(session_id, [])
 
-        # 验证第一轮保存了搜索结果
+        # Verify search results saved after round 1
         assert context1.last_search_results is not None, \
-            "第一轮后应该保存搜索结果"
+            "Should save search results after round 1"
         assert len(context1.last_search_results) > 0, \
-            "搜索结果不应该为空"
+            "Search results should not be empty"
 
-        print(f"第一轮保存了 {len(context1.last_search_results)} 首歌曲")
+        print(f"Round 1 saved {len(context1.last_search_results)} songs")
 
-        # 第二轮：选择
+        # Round 2: Select
         request2 = MusicAgentWebhookRequest(
             model="test",
             stream=True,
             messages=[
-                WebhookMessage(role="user", content="Taylor Swift的歌"),
+                WebhookMessage(role="user", content="Songs by Ed Sheeran"),
                 WebhookMessage(role="assistant", content="Here are some songs"),
-                WebhookMessage(role="user", content="第一首"),
+                WebhookMessage(role="user", content="the first one"),
             ],
             sessionId=session_id,
         )
@@ -272,37 +286,37 @@ class TestMultiTurnConversation:
 
         result2 = await self._extract_stream_content(chunks2)
 
-        # 验证第二轮成功播放
+        # Verify round 2 playback
         assert result2["action"] is not None, \
-            "第二轮应该有播放action"
+            "Round 2 should have playback action"
 
-        print(f"✅ 上下文保持测试通过")
+        print(f"✅ Context persistence test passed")
 
     async def test_multi_turn_via_api(self):
         """
-        通过API测试多轮对话（端到端测试）
-        注意：需要后端服务运行在 localhost:8501
+        Test multi-turn via API (end-to-end)
+        Note: Requires backend running on localhost:8501
         """
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 base_url = "http://localhost:8501"
 
-                # 检查服务是否可用
+                # Check service available
                 try:
                     response = await client.get(f"{base_url}/health")
                     if response.status_code != 200:
-                        pytest.skip("后端服务不可用")
+                        pytest.skip("Backend service unavailable")
                 except httpx.ConnectError:
-                    pytest.skip("后端服务未启动，跳过API测试")
+                    pytest.skip("Backend not running, skipping API test")
 
                 session_id = "api_test_session_001"
 
-                # 第一轮：查询列表
-                print("\n--- API 多轮测试 - Turn 1 ---")
+                # Round 1: Query list
+                print("\n--- API Multi-turn Test - Turn 1 ---")
                 response1 = await client.post(
                     f"{base_url}/webhook/MusicAgent",
                     json={
-                        "messages": [{"role": "user", "content": "推荐几首适合跑步的歌"}],
+                        "messages": [{"role": "user", "content": "Recommend songs for workout"}],
                         "stream": False,
                         "sessionId": session_id,
                     },
@@ -311,23 +325,23 @@ class TestMultiTurnConversation:
 
                 assert response1.status_code == 200
 
-                # 解析SSE响应
+                # Parse SSE response
                 chunks1 = response1.text.strip().split("\n\n")
                 result1 = await self._extract_stream_content(chunks1)
 
-                print(f"Turn 1 响应: {result1['content'][:100]}...")
+                print(f"Turn 1 response: {result1['content'][:100]}...")
                 assert "Found" in result1['content'] or "Songs" in result1['content'] or \
                        "Recommending" in result1['content']
 
-                # 第二轮：选择
-                print("\n--- API 多轮测试 - Turn 2 ---")
+                # Round 2: Select
+                print("\n--- API Multi-turn Test - Turn 2 ---")
                 response2 = await client.post(
                     f"{base_url}/webhook/MusicAgent",
                     json={
                         "messages": [
-                            {"role": "user", "content": "推荐几首适合跑步的歌"},
+                            {"role": "user", "content": "Recommend songs for workout"},
                             {"role": "assistant", "content": result1['content']},
-                            {"role": "user", "content": "第二首"},
+                            {"role": "user", "content": "the second one"},
                         ],
                         "stream": False,
                         "sessionId": session_id,
@@ -340,15 +354,15 @@ class TestMultiTurnConversation:
                 chunks2 = response2.text.strip().split("\n\n")
                 result2 = await self._extract_stream_content(chunks2)
 
-                print(f"Turn 2 响应: {result2['content']}")
-                assert result2["action"] is not None, "应该有播放action"
+                print(f"Turn 2 response: {result2['content']}")
+                assert result2["action"] is not None, "Should have playback action"
 
-                print("✅ API多轮测试通过")
+                print("✅ API multi-turn test passed")
 
         except httpx.TimeoutException:
-            pytest.skip("API请求超时")
+            pytest.skip("API request timeout")
         except Exception as e:
-            pytest.skip(f"API测试失败: {e}")
+            pytest.skip(f"API test failed: {e}")
 
 
 @pytest.mark.regression
@@ -356,55 +370,58 @@ class TestMultiTurnConversation:
 @pytest.mark.multi_turn
 @pytest.mark.asyncio
 class TestAnaphoraResolution:
-    """指代消解专项测试"""
+    """Anaphora resolution specific tests"""
 
     @pytest.mark.parametrize("query,expected_selection", [
-        ("第一首", "first"),
-        ("第二首", "second"),
-        ("第三个", "third"),
-        ("最后一首", "last"),
-        ("播放它", "it"),
-        ("就这个", "it"),
+        ("the first one", "first"),
+        ("the second one", "second"),
+        ("the third one", "third"),
+        ("the last one", "last"),
+        ("play it", "it"),
+        ("this one", "it"),
+        ("first song", "first"),
+        ("last track", "last"),
     ])
     async def test_anaphora_resolution_patterns(self, query: str, expected_selection: str):
         """
-        测试各种指代消解模式
+        Test various anaphora resolution patterns
         """
         from api.webhook_handler import analyze_intent_with_context
 
-        # 模拟有历史搜索结果的情况
+        # Mock history with search results
         last_results = [
-            {"title": "歌曲1", "artist": "歌手A"},
-            {"title": "歌曲2", "artist": "歌手B"},
-            {"title": "歌曲3", "artist": "歌手C"},
+            {"title": "Song 1", "artist": "Artist A"},
+            {"title": "Song 2", "artist": "Artist B"},
+            {"title": "Song 3", "artist": "Artist C"},
         ]
 
         result = await analyze_intent_with_context(
             current_input=query,
-            history="user: 推荐几首歌\nassistant: 歌曲1, 歌曲2, 歌曲3",
+            history="user: Recommend some songs\nassistant: Song 1, Song 2, Song 3",
             last_results=last_results,
         )
 
-        print(f"\n查询: {query}")
-        print(f"意图: {result.get('intent_type')}")
-        print(f"解析后: {result.get('resolved_query')}")
+        print(f"\nQuery: {query}")
+        print(f"Intent: {result.get('intent_type')}")
+        print(f"Resolved: {result.get('resolved_query')}")
 
-        # 验证意图被正确解析为搜索（选择后的转换）
+        # Verify intent correctly parsed as search (post-selection conversion)
         assert result.get("intent_type") in ["search", "select_from_results"], \
-            f"指代消解应该返回search或select_from_results，实际是: {result.get('intent_type')}"
+            f"Anaphora should return search or select_from_results, actual: {result.get('intent_type')}"
 
-        # 验证有选择索引或类型
+        # Verify selection index or type present
         params = result.get("parameters", {})
         has_selection = params.get("selection_index") is not None or \
                        params.get("selection_type") is not None
 
-        # 或者已经转换后包含query
-        has_resolved_query = result.get("resolved_query") and "歌曲" in result.get("resolved_query", "")
+        # Or converted with query
+        resolved = result.get("resolved_query", "")
+        has_resolved_query = resolved and ("Song" in resolved or "Play" in resolved)
 
         assert has_selection or has_resolved_query, \
-            f"指代消解应该解析出选择信息，实际是: {params}"
+            f"Anaphora should resolve selection info, actual: {params}"
 
 
 if __name__ == "__main__":
-    # 直接运行测试
+    # Run tests directly
     pytest.main([__file__, "-v", "-s", "-m", "multi_turn"])
