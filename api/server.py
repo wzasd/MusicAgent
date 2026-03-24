@@ -39,6 +39,15 @@ from graphs.music_graph import get_agent_status_tracker, _clean_search_query
 from llms.siliconflow_llm import get_chat_model
 from prompts.music_prompts import MUSIC_INTENT_ANALYZER_PROMPT
 
+# 导入搜索日志函数
+from api.search_logs import add_search_log, get_search_logs
+
+# 导入 webhook 处理器
+from api.webhook_handler import (
+    handle_music_agent_webhook,
+    MusicAgentWebhookRequest,
+)
+
 logger = get_logger(__name__)
 
 app = FastAPI(title="Music Recommendation API", version="1.0.0")
@@ -56,25 +65,6 @@ app.add_middleware(
 _agent: Optional[MusicRecommendationAgent] = None
 _playlist_service: Optional[PlaylistRecommendationService] = None
 _journey_service: Optional[MusicJourneyService] = None
-
-# 搜索日志存储（内存中，最近50条）
-_search_logs: List[Dict[str, Any]] = []
-_MAX_LOGS = 50
-
-
-def add_search_log(log_entry: Dict[str, Any]):
-    """添加搜索日志"""
-    global _search_logs
-    from datetime import datetime
-    log_entry["timestamp"] = datetime.now().isoformat()
-    _search_logs.insert(0, log_entry)  # 新日志放前面
-    if len(_search_logs) > _MAX_LOGS:
-        _search_logs = _search_logs[:_MAX_LOGS]
-
-
-def get_search_logs(limit: int = 20) -> List[Dict[str, Any]]:
-    """获取最近搜索日志"""
-    return _search_logs[:limit]
 
 
 def get_agent() -> MusicRecommendationAgent:
@@ -130,6 +120,16 @@ class SearchRequest(BaseModel):
     query: str
     genre: Optional[str] = None
     limit: int = 20
+    session_id: Optional[str] = None  # 用于多样性去重
+
+
+class WebSearchRequest(BaseModel):
+    """Web 搜索请求"""
+    query: str
+    provider: Optional[str] = None  # tavily, duckduckgo, 默认自动选择
+    top_k: int = 5
+    include_answer: bool = True  # 是否包含 AI 摘要
+    time_range: Optional[str] = None  # d=天, w=周, m=月, y=年
 
 
 async def stream_recommendations(
@@ -761,7 +761,12 @@ async def search_music(request: SearchRequest):
             activity = parameters.get("activity", "放松")
             from tools.music_tools import get_music_recommender
             recommender = get_music_recommender()
-            recs = await recommender.recommend_by_activity(activity, limit=request.limit)
+            recs = await recommender.recommend_by_activity(
+                activity,
+                limit=request.limit,
+                session_id=request.session_id,
+                enable_diversity=True
+            )
             # 将推荐转换为歌曲列表，并附加推荐理由
             songs = []
             for rec in recs:
@@ -775,7 +780,12 @@ async def search_music(request: SearchRequest):
             mood = parameters.get("mood", "开心")
             from tools.music_tools import get_music_recommender
             recommender = get_music_recommender()
-            recs = await recommender.recommend_by_mood(mood, limit=request.limit)
+            recs = await recommender.recommend_by_mood(
+                mood,
+                limit=request.limit,
+                session_id=request.session_id,
+                enable_diversity=True
+            )
             # 将推荐转换为歌曲列表，并附加推荐理由
             songs = []
             for rec in recs:
@@ -832,6 +842,135 @@ async def search_music(request: SearchRequest):
         add_search_log(log_entry)
         logger.error(f"搜索歌曲失败: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/web-search/providers")
+async def list_web_search_providers():
+    """
+    获取可用的 Web Search Provider 列表
+    """
+    from tools.web_search import list_providers
+    providers = list_providers()
+    return {
+        "success": True,
+        "providers": providers
+    }
+
+
+@app.post("/api/web-search")
+async def web_search(request: WebSearchRequest):
+    """
+    通用 Web Search API - 支持 Tavily 和 DuckDuckGo
+
+    Provider 选择策略:
+    - 不指定 provider: 自动选择（有 Tavily API Key 用 Tavily，否则用 DuckDuckGo）
+    - provider="tavily": 使用 Tavily API
+    - provider="duckduckgo": 使用 DuckDuckGo（免费，无需 API Key）
+    """
+    try:
+        from tools.web_search import get_web_search
+
+        # 获取 web search 实例
+        search = get_web_search(
+            provider=request.provider,
+            use_fallback=True  # 如果指定 provider 失败，自动回退
+        )
+
+        # 执行搜索
+        result = await search.search(
+            query=request.query,
+            top_k=request.top_k,
+            include_answer=request.include_answer,
+            time_range=request.time_range
+        )
+
+        # 格式化结果为可序列化的格式
+        formatted_results = []
+        for r in result.get("results", []):
+            formatted_results.append({
+                "title": r.title,
+                "url": r.url,
+                "content": r.content,
+                "source": r.source,
+                "score": r.score,
+            })
+
+        return {
+            "success": True,
+            "query": result.get("query"),
+            "provider": result.get("provider"),
+            "total_results": result.get("total_results"),
+            "answer": result.get("answer"),
+            "results": formatted_results,
+        }
+
+    except Exception as e:
+        logger.error(f"Web Search 失败: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/web-search/health")
+async def check_web_search_health(provider: Optional[str] = None):
+    """
+    检查 Web Search Provider 健康状态
+    """
+    try:
+        from tools.web_search import create_web_search, list_providers
+
+        if provider:
+            # 检查指定 provider
+            try:
+                search = create_web_search(provider)
+                is_healthy = await search.health_check()
+                return {
+                    "success": True,
+                    "provider": provider,
+                    "healthy": is_healthy
+                }
+            except Exception as e:
+                return {
+                    "success": False,
+                    "provider": provider,
+                    "healthy": False,
+                    "error": str(e)
+                }
+        else:
+            # 检查所有 providers
+            all_providers = list_providers()
+            health_status = {}
+            for name in all_providers.keys():
+                try:
+                    search = create_web_search(name)
+                    is_healthy = await search.health_check()
+                    health_status[name] = {"healthy": is_healthy}
+                except Exception as e:
+                    health_status[name] = {"healthy": False, "error": str(e)}
+
+            return {
+                "success": True,
+                "providers": health_status
+            }
+
+    except Exception as e:
+        logger.error(f"健康检查失败: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/webhook/MusicAgent")
+async def music_agent_webhook_endpoint(request: MusicAgentWebhookRequest):
+    """
+    音乐语音助手 Webhook 接口
+    支持流式 SSE 输出，处理音乐查询并返回播控指令
+    """
+    return StreamingResponse(
+        handle_music_agent_webhook(request),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"
+        }
+    )
 
 
 if __name__ == "__main__":
