@@ -135,18 +135,18 @@ ANAPHORA_RESOLUTION_PROMPT = """你是一个专业的对话理解助手，负责
 【输出格式】
 必须返回纯JSON：
 {{
-    "intent_type": "search|recommend_by_artist|recommend_by_mood|recommend_by_activity|general_chat|select_from_results",
-    "action_type": "list|play",  // list=展示列表让用户选择, play=直接播放
+    "intent_type": "search|recommend_by_artist|recommend_by_mood|recommend_by_activity|general_chat|select_from_results|cancel",
+    "action_type": "list|play|cancel",  // list=展示列表, play=直接播放, cancel=用户拒绝/取消
     "parameters": {{
         // 根据意图类型填充
         "query": "搜索关键词",
         "artist": "艺术家",
         "mood": "心情",
         "activity": "活动",
-        "selection_index": null,  // 如果是选择某首歌曲，这里是索引（从0开始）
-        "selection_type": null    // "first", "second", "third", "last" 等
+        "selection_index": null,
+        "selection_type": null
     }},
-    "resolved_query": "解析后的完整查询（处理指代后）",
+    "resolved_query": "解析后的完整查询",
     "context": "上下文说明"
 }}
 
@@ -157,13 +157,15 @@ ANAPHORA_RESOLUTION_PROMPT = """你是一个专业的对话理解助手，负责
 - recommend_by_activity: 按活动场景推荐
 - general_chat: 普通聊天
 - select_from_results: 从之前的结果中选择（如"第一首"）
+- cancel: 用户拒绝、取消或表示不想继续（如"我不听了","算了","不用了"）
 
 【action_type 判断示例】
-- "周杰伦有哪些代表作" → action_type: "list"（用户想先看列表）
-- "播放周杰伦的稻香" → action_type: "play"（用户明确要播放）
-- "推荐几首适合跑步的歌" → action_type: "list"（先展示选项）
-- "来首开心的歌" → action_type: "play"（直接播放一首）
-- "第一首" → action_type: "play"（选择后播放）
+- "周杰伦有哪些代表作" → action_type: "list"
+- "播放周杰伦的稻香" → action_type: "play"
+- "推荐几首适合跑步的歌" → action_type: "list"
+- "来首开心的歌" → action_type: "play"
+- "第一首" → action_type: "play"
+- "我不听了" / "算了" → action_type: "cancel"
 
 【示例】
 历史:
@@ -391,7 +393,90 @@ async def stream_webhook_response(
         intent_type = intent_data.get("intent_type", "search")
         parameters = intent_data.get("parameters", {})
         resolved_query = intent_data.get("resolved_query", current_input)
-        action_type = intent_data.get("action_type", "play")  # list 或 play
+        action_type = intent_data.get("action_type", "play")
+
+        # ========== 处理从列表中选择歌曲 ==========
+        # 检查是否有选择索引（无论意图类型是什么）
+        selection_index = parameters.get("selection_index")
+        if selection_index is not None and context.last_search_results:
+            try:
+                idx = int(selection_index)
+                if 0 <= idx < len(context.last_search_results):
+                    selected = context.last_search_results[idx]
+                    logger.info(f"从列表中选择第 {idx+1} 首: {selected['title']} - {selected['artist']}")
+
+                    # 创建播放动作
+                    song = Song(title=selected['title'], artist=selected['artist'])
+                    action = await create_play_action(song)
+
+                    new_segment = f"Now playing '{selected['title']}' by {selected['artist']}"
+                    accumulated_content = accumulated_content + new_segment
+
+                    final_response = MusicAgentWebhookResponse(
+                        errorCode=0,
+                        errorMessage="",
+                        reply=WebhookReply(
+                            streamInfo=StreamInfo(
+                                streamType="final",
+                                streamingTextId=streaming_id,
+                                streamContent=accumulated_content
+                            ),
+                            action=[action]
+                        )
+                    )
+
+                    # 记录日志
+                    log_entry = {
+                        "action": "webhook_search",
+                        "original_query": current_input,
+                        "intent": intent_type,
+                        "parameters": parameters,
+                        "result_count": 1,
+                        "elapsed_ms": round((time.time() - start_time) * 1000, 2),
+                        "status": "success",
+                        "source": "selection",
+                        "songs": [{"title": selected['title'], "artist": selected['artist']}],
+                    }
+                    add_search_log(log_entry)
+
+                    yield f"data: {final_response.model_dump_json(ensure_ascii=False)}\n\n"
+                    return
+                else:
+                    logger.warning(f"选择索引 {idx} 超出范围 (0-{len(context.last_search_results)-1})")
+            except (ValueError, TypeError) as e:
+                logger.warning(f"无效的选择索引: {selection_index}, 错误: {e}")
+
+        # 处理取消/拒绝意图
+        if intent_type == "cancel" or action_type == "cancel":
+            # 清理上下文
+            context.last_search_results = None
+
+            new_segment = "Okay, no problem! Let me know if you'd like to listen to music later."
+            accumulated_content = accumulated_content + new_segment
+
+            final_response = MusicAgentWebhookResponse(
+                errorCode=0,
+                errorMessage="",
+                reply=WebhookReply(
+                    streamInfo=StreamInfo(
+                        streamType="final",
+                        streamingTextId=streaming_id,
+                        streamContent=accumulated_content
+                    )
+                )
+            )
+            yield f"data: {final_response.model_dump_json(ensure_ascii=False)}\n\n"
+
+            # 记录日志
+            if log_entry:
+                log_entry.update({
+                    "result_count": 0,
+                    "elapsed_ms": round((time.time() - start_time) * 1000, 2),
+                    "status": "cancelled",
+                    "source": "user_cancel",
+                })
+                add_search_log(log_entry)
+            return
 
         # 针对 recommend_by_artist 意图，默认展示列表
         if intent_type == "recommend_by_artist" and action_type not in ["list", "play"]:
