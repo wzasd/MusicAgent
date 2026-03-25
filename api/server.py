@@ -52,10 +52,15 @@ logger = get_logger(__name__)
 
 app = FastAPI(title="Music Recommendation API", version="1.0.0")
 
-# 配置CORS
+# 配置CORS - 支持本地开发和生产环境
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_origins=[
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://159.75.160.65:3000",
+        "http://159.75.160.65",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
