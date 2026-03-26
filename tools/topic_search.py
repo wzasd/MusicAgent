@@ -249,24 +249,13 @@ class TopicSearchEngine:
             constraint = f" ({', '.join(constraint_parts)})" if constraint_parts else ""
 
             from llms.siliconflow_llm import SiliconFlowLLM
+            from prompts.music_prompts import TOPIC_SONG_EXTRACTION_PROMPT
             llm = SiliconFlowLLM()
-            extract_prompt = (
-                f'根据以下网络搜索结果，提取与话题"{topic}"相关的歌曲{constraint}。\n\n'
-                f"{combined}\n\n"
-                f"【提取规则】\n"
-                f"1. 只提取搜索结果中明确提及的歌曲，不要猜测\n"
-                f"2. 优先提取搜索结果中推荐、排行、列表形式的歌曲\n"
-                f"3. 歌名和歌手必须与搜索结果一致\n"
-                f"4. 如果没有找到符合条件的歌曲，必须返回空数组 []\n\n"
-                f"【输出格式】\n"
-                f'请只返回 JSON 数组（最多 {top_k} 首），格式：\n'
-                '[{"title": "歌名", "artist": "演唱者", "confidence": 0.9, "source_snippet": "来源简述"}]\n\n'
-                f"confidence 评分标准：\n"
-                f"- 0.9-1.0: 搜索结果明确推荐该歌曲与话题相关，且有完整信息\n"
-                f"- 0.7-0.89: 搜索结果提到该歌曲与话题相关，但信息不够完整\n"
-                f"- 0.5-0.69: 歌曲被提及但与话题关联不明确\n"
-                f"- <0.5: 不确定是否相关\n\n"
-                f"重要：只从给定的搜索结果中提取，不要凭记忆猜测。只返回纯JSON数组，不要包含其他文字。"
+            extract_prompt = TOPIC_SONG_EXTRACTION_PROMPT.format(
+                topic=topic,
+                constraint=constraint,
+                search_results=combined,
+                top_k=top_k
             )
             response = llm.invoke_text(
                 "你是专业的音乐信息提取助手，擅长从搜索结果中准确提取歌曲信息。只使用给定的搜索结果，不要凭记忆猜测。",

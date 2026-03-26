@@ -226,25 +226,13 @@ class ThemeSearchEngine:
 
             # 用 LLM 从搜索结果中提取结构化歌曲列表
             from llms.siliconflow_llm import SiliconFlowLLM
+            from prompts.music_prompts import THEME_SONG_EXTRACTION_PROMPT
             llm = SiliconFlowLLM()
-            extract_prompt = (
-                f'根据以下网络搜索结果，提取影视作品《{title}》中的主题曲/片头曲/片尾曲/插曲信息。\n\n'
-                f"{combined}\n\n"
-                f"【提取规则】\n"
-                f"1. 只提取搜索结果中明确提及的歌曲，不要猜测\n"
-                f"2. 如果搜索结果提到多个歌曲，按重要性排序列出\n"
-                f"3. 如果搜索结果是某歌曲的百科/音乐页面，该歌曲置信度提高\n"
-                f"4. 歌名和歌手必须与搜索结果一致，不要修改\n"
-                f"5. 如果没有找到任何歌曲，必须返回空数组 []\n\n"
-                f"【输出格式】\n"
-                f'请只返回 JSON 数组（最多 {top_k} 首），格式：\n'
-                '[{"title": "歌名", "artist": "演唱者", "type": "主题曲/片头曲/片尾曲/插曲", "confidence": 0.9, "source_snippet": "来源简述"}]\n\n'
-                f"confidence 评分标准：\n"
-                f"- 0.9-1.0: 搜索结果明确列出歌名、演唱者和歌曲类型\n"
-                f"- 0.7-0.89: 搜索结果提到歌名和演唱者，但类型不明确\n"
-                f"- 0.5-0.69: 只有歌名，演唱者不明确或来自不太可靠的来源\n"
-                f"- <0.5: 不确定是否相关\n\n"
-                f"重要：只从给定的搜索结果中提取，不要凭记忆猜测。只返回纯JSON数组，不要包含其他文字。"
+
+            extract_prompt = THEME_SONG_EXTRACTION_PROMPT.format(
+                title=title,
+                search_results=combined,
+                top_k=top_k
             )
             response = llm.invoke_text(
                 "你是专业的音乐信息提取助手，擅长从搜索结果中准确提取影视歌曲信息。只使用给定的搜索结果，不要凭记忆猜测。",

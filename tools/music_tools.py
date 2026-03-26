@@ -753,25 +753,12 @@ class MusicSearchTool:
 
             # 使用 LLM 提取歌曲列表
             from llms.siliconflow_llm import SiliconFlowLLM
+            from prompts.music_prompts import ARTIST_SONGS_EXTRACTION_PROMPT
             llm = SiliconFlowLLM()
-            extract_prompt = (
-                f'根据以下网络搜索结果，提取歌手"{artist}"的热门歌曲列表。\n\n'
-                f"{combined}\n\n"
-                f"【提取规则】\n"
-                f"1. 只提取该歌手的热门/知名歌曲，不要猜测\n"
-                f"2. 优先提取搜索结果中明确推荐的歌曲\n"
-                f"3. 如果搜索结果提到歌曲列表，优先提取列表中的歌曲\n"
-                f"4. 歌名必须与搜索结果一致\n"
-                f"5. 如果没有找到任何歌曲，必须返回空数组 []\n\n"
-                f"【输出格式】\n"
-                f'请只返回 JSON 数组（最多 {limit} 首），格式：\n'
-                '[{"title": "歌名", "confidence": 0.9}]\n\n'
-                f"confidence 评分标准：\n"
-                f"- 0.9-1.0: 搜索结果明确推荐该歌曲是{artist}的热门歌曲\n"
-                f"- 0.7-0.89: 搜索结果提到该歌曲是{artist}的歌曲\n"
-                f"- 0.5-0.69: 歌曲被提及但不确定是否热门\n"
-                f"- <0.5: 不确定\n\n"
-                f"重要：只从给定的搜索结果中提取，不要凭记忆猜测。只返回纯JSON数组，不要包含其他文字。"
+            extract_prompt = ARTIST_SONGS_EXTRACTION_PROMPT.format(
+                artist=artist,
+                search_results=combined,
+                limit=limit
             )
             response = llm.invoke_text(
                 f"你是专业的音乐信息提取助手，擅长从搜索结果中提取歌手的热门歌曲。只使用给定的搜索结果，不要凭记忆猜测。",
@@ -781,12 +768,27 @@ class MusicSearchTool:
             # 解析 JSON
             json_match = re.search(r'\[.*?\]', response, re.DOTALL)
             if not json_match:
-                logger.warning(f"Web Search 提取 {artist} 歌曲失败")
+                logger.warning(f"Web Search 提取 {artist} 歌曲失败：无法从响应中找到JSON数组")
+                logger.debug(f"LLM 响应: {response[:500]}")
                 return []
 
-            songs_raw = json.loads(json_match.group())
+            try:
+                songs_raw = json.loads(json_match.group())
+            except json.JSONDecodeError as e:
+                logger.warning(f"Web Search 提取 {artist} 歌曲失败：JSON解析错误 {e}")
+                logger.debug(f"JSON内容: {json_match.group()[:500]}")
+                return []
+
+            if not isinstance(songs_raw, list):
+                logger.warning(f"Web Search 提取 {artist} 歌曲失败：解析结果不是列表，而是 {type(songs_raw)}")
+                return []
+
             results = []
-            for item in songs_raw:
+            for i, item in enumerate(songs_raw):
+                if not isinstance(item, dict):
+                    logger.debug(f"跳过非字典项 #{i}: {item}")
+                    continue
+
                 song_title = item.get("title")
                 confidence = float(item.get("confidence", 0))
 
@@ -800,6 +802,11 @@ class MusicSearchTool:
                     duration=0,
                     popularity=int(confidence * 100),
                 ))
+
+            if not results:
+                logger.warning(f"Web Search 未提取到有效的 {artist} 歌曲，原始返回: {songs_raw}")
+            else:
+                logger.info(f"Web Search 成功提取 {len(results)} 首 {artist} 的歌曲")
 
             return results
 
@@ -920,22 +927,28 @@ class MusicRecommenderEngine:
 
     @timed("recommend_by_mood")
     async def recommend_by_mood(
-        self, 
-        mood: str, 
-        limit: int = 5
+        self,
+        mood: str,
+        limit: int = 5,
+        session_id: Optional[str] = None,
+        enable_diversity: bool = True,
+        mmr_lambda: float = 0.7
     ) -> List[MusicRecommendation]:
         """
         根据心情推荐音乐（使用 Spotify 推荐 API）
-        
+
         Args:
             mood: 心情描述（如：开心、悲伤、放松、激动等）
             limit: 推荐数量
-            
+            session_id: 用户会话 ID（用于多样性去重）
+            enable_diversity: 是否启用多样性增强
+            mmr_lambda: MMR 相关性权重 (0-1)
+
         Returns:
             音乐推荐列表
         """
         try:
-            logger.info(f"根据心情推荐音乐: mood='{mood}'")
+            logger.info(f"根据心情推荐音乐: mood='{mood}', diversity={enable_diversity}, session={session_id}")
             
             # 心情到 Spotify 流派的映射（扩充中文同义词）
             mood_genre_map = {
@@ -1000,7 +1013,23 @@ class MusicRecommenderEngine:
             try:
                 from tools.rag_music_search_v2 import get_rag_music_search_v2
                 rag_search = get_rag_music_search_v2()
-                rag_results = await rag_search.search_by_mood(mood, top_k=limit * 2)
+
+                # 使用多样性搜索（如果启用）
+                if enable_diversity and session_id:
+                    rag_results = await rag_search.search_with_diversity(
+                        query=mood,
+                        top_k=limit,
+                        session_id=session_id,
+                        enable_mmr=True,
+                        enable_dithering=True,
+                        mmr_lambda=mmr_lambda,
+                        randomness=0.15,  # 添加随机扰动
+                        temperature=1.3   # 温度 >1 增加多样性
+                    )
+                    logger.info(f"🎲 使用多样性搜索: session={session_id}, mmr_lambda={mmr_lambda}")
+                else:
+                    rag_results = await rag_search.search_by_mood(mood, top_k=limit * 2, randomness=0.1, temperature=1.2)
+
                 if rag_results:
                     recommendations = []
                     for result in rag_results[:limit]:
@@ -1155,22 +1184,28 @@ class MusicRecommenderEngine:
 
     @timed("recommend_by_activity")
     async def recommend_by_activity(
-        self, 
-        activity: str, 
-        limit: int = 5
+        self,
+        activity: str,
+        limit: int = 5,
+        session_id: Optional[str] = None,
+        enable_diversity: bool = True,
+        mmr_lambda: float = 0.7
     ) -> List[MusicRecommendation]:
         """
         根据活动场景推荐音乐（使用 Spotify 推荐 API）
-        
+
         Args:
             activity: 活动描述（如：运动、学习、开车、睡觉等）
             limit: 推荐数量
-            
+            session_id: 用户会话 ID（用于多样性去重）
+            enable_diversity: 是否启用多样性增强
+            mmr_lambda: MMR 相关性权重 (0-1)
+
         Returns:
             音乐推荐列表
         """
         try:
-            logger.info(f"根据活动场景推荐: activity='{activity}'")
+            logger.info(f"根据活动场景推荐: activity='{activity}', diversity={enable_diversity}, session={session_id}")
             
             # 活动到 Spotify 流派的映射
             activity_genre_map = {
@@ -1200,18 +1235,44 @@ class MusicRecommenderEngine:
                 from tools.rag_music_search_v2 import get_rag_music_search_v2
                 rag_search = get_rag_music_search_v2()
 
-                rag_results = await rag_search.search_by_activity(activity, top_k=limit * 2)
+                # 使用多样性搜索（如果启用）
+                if enable_diversity and session_id:
+                    # 对于活动场景，扩展查询词以获得更好的语义匹配
+                    activity_expansions = {
+                        "工作": "工作 办公 专注 背景音乐 work focus productive background",
+                        "学习": "学习 阅读 安静 集中 study reading calm concentration",
+                        "运动": "运动 健身 跑步 节奏 workout gym running energetic",
+                        "健身": "运动 健身 跑步 节奏 workout gym running energetic",
+                        "睡前": "睡前 放松 安眠 轻音乐 sleep bedtime relax ambient",
+                        "睡觉": "睡前 放松 安眠 轻音乐 sleep bedtime relax ambient",
+                        "开车": "开车 驾驶 提神 节奏 driving commute upbeat",
+                    }
+                    expanded_query = activity_expansions.get(activity, activity)
 
-                # 结果不足时补充通用语义搜索
-                if len(rag_results) < limit:
-                    extra = await rag_search.search(activity, top_k=limit)
-                    seen_titles = {r["title"] for r in rag_results}
-                    for r in extra:
-                        if r["title"] not in seen_titles:
-                            rag_results.append(r)
-                            seen_titles.add(r["title"])
-                        if len(rag_results) >= limit * 2:
-                            break
+                    rag_results = await rag_search.search_with_diversity(
+                        query=expanded_query,
+                        top_k=limit,
+                        session_id=session_id,
+                        enable_mmr=True,
+                        enable_dithering=True,
+                        mmr_lambda=mmr_lambda,
+                        randomness=0.15,  # 添加随机扰动
+                        temperature=1.3   # 温度 >1 增加多样性
+                    )
+                    logger.info(f"🎲 使用多样性搜索: session={session_id}, mmr_lambda={mmr_lambda}")
+                else:
+                    rag_results = await rag_search.search_by_activity(activity, top_k=limit * 2, randomness=0.1, temperature=1.2)
+
+                    # 结果不足时补充通用语义搜索
+                    if len(rag_results) < limit:
+                        extra = await rag_search.search(activity, top_k=limit)
+                        seen_titles = {r["title"] for r in rag_results}
+                        for r in extra:
+                            if r["title"] not in seen_titles:
+                                rag_results.append(r)
+                                seen_titles.add(r["title"])
+                            if len(rag_results) >= limit * 2:
+                                break
 
                 if rag_results:
                     recommendations = []

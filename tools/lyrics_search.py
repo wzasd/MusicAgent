@@ -9,7 +9,7 @@ from typing import Dict, List, Optional, Any
 from difflib import SequenceMatcher
 
 from config.logging_config import get_logger
-from tools.multilingual_search import MultilingualSearchBuilder
+from tools.multilingual_search import MultilingualSearchBuilder, build_lyrics_query_v2
 from tools.web_search_cache import get_cached_search, set_cached_search
 
 logger = get_logger(__name__)
@@ -79,7 +79,7 @@ class LyricsSearchEngine:
             # 综合相似度（加权）
             total_sim = max(fragment_sim * 1.5, full_lyrics_sim * 1.2, title_sim)
 
-            if total_sim > 0.3:  # 阈值
+            if total_sim > 0.5:  # 提高阈值，减少误匹配
                 results.append({
                     "title": mapping["title"],
                     "artist": mapping["artist"],
@@ -187,6 +187,7 @@ class LyricsSearchEngine:
     async def search_with_web_fallback(self, query: str, top_k: int = 5) -> List[Dict[str, Any]]:
         """
         歌词搜索：本地数据库优先，命中不了则用 Tavily Web Search 查歌词来源。
+        Phase 1 优化：使用多层搜索策略提升准确率
 
         Args:
             query: 用户原始输入（含歌词片段）
@@ -226,97 +227,126 @@ class LyricsSearchEngine:
                 logger.warning("Tavily API Key 未配置，跳过 Web Search")
                 return local_results
 
-            # 使用多语言搜索构建器构建搜索参数
-            search_params = MultilingualSearchBuilder.build_tavily_params(
-                "lyrics", lyrics=lyrics_content
-            )
+            # Phase 1 优化：使用多层搜索策略
+            query_configs = build_lyrics_query_v2(lyrics_content)
 
-            async with aiohttp.ClientSession() as session:
-                async with session.post(
-                    "https://api.tavily.com/search",
-                    json={
-                        "api_key": api_key,
-                        **search_params,
-                    },
-                    headers={"Content-Type": "application/json"},
-                    timeout=aiohttp.ClientTimeout(total=15),
-                ) as resp:
-                    if resp.status != 200:
-                        logger.error(f"Tavily 请求失败: {resp.status}")
-                        return local_results
-                    data = await resp.json()
+            for attempt, search_params in enumerate(query_configs, 1):
+                strategy = search_params.pop("strategy", "unknown")
+                logger.info(f"尝试搜索策略 {attempt}/{len(query_configs)}: {strategy}")
 
-            answer = data.get("answer", "")
-            # 增加结果数到10，使用更多来源
-            results_list = data.get("results", [])
-            snippets = "\n".join(
-                f"[{i+1}] {r.get('content', '')[:350]}"
-                for i, r in enumerate(results_list[:8])
-            )
-            combined = f"搜索答案: {answer}\n\n相关内容:\n{snippets}".strip()
+                try:
+                    async with aiohttp.ClientSession() as session:
+                        async with session.post(
+                            "https://api.tavily.com/search",
+                            json={
+                                "api_key": api_key,
+                                **search_params,
+                            },
+                            headers={"Content-Type": "application/json"},
+                            timeout=aiohttp.ClientTimeout(total=15),
+                        ) as resp:
+                            if resp.status != 200:
+                                logger.warning(f"Tavily 请求失败 (策略 {strategy}): {resp.status}")
+                                continue
+                            data = await resp.json()
 
-            if not combined:
-                return local_results
+                    answer = data.get("answer", "")
+                    results_list = data.get("results", [])
 
-            logger.info(f"Tavily 返回答案: {answer[:100]}")
+                    if not results_list and not answer:
+                        logger.info(f"策略 {strategy} 无结果，尝试下一策略")
+                        continue
 
-            # 用 LLM 从 web 内容中提取结构化信息（不依赖 LLM 自身记忆）
-            from llms.siliconflow_llm import SiliconFlowLLM
-            llm = SiliconFlowLLM()
-            extract_prompt = (
-                f'根据以下网络搜索结果，提取歌词片段 "{lyrics_content}" 所对应的歌曲信息。\n\n'
-                f"{combined}\n\n"
-                f"【提取规则】\n"
-                f"1. 歌词片段必须在搜索结果的歌曲信息中被提及\n"
-                f"2. 优先匹配搜索结果中明确提到该歌词的歌曲\n"
-                f"3. 如果搜索结果提到多个可能的歌曲，选择最匹配的那个\n"
-                f"4. 如果无法确定，返回空值\n\n"
-                f"【输出格式】\n"
-                '请只返回 JSON，格式：{"title": "歌名", "artist": "艺术家", "confidence": 0.0, "source_snippet": "来源简述"}\n\n'
-                f"confidence 评分标准：\n"
-                f"- 0.9-1.0: 搜索结果明确显示该歌词属于某首歌，且歌名歌手完整\n"
-                f"- 0.7-0.89: 搜索结果提到该歌词对应的歌曲，但信息不够详细\n"
-                f"- 0.5-0.69: 有相关信息但不够确定\n"
-                f"- <0.5: 无法确定或搜索结果不匹配\n\n"
-                f"无法确定时返回：{{\"title\": null, \"artist\": null, \"confidence\": 0}}"
-            )
-            response = llm.invoke_text(
-                "你是专业的歌词识别助手，擅长通过歌词片段识别歌曲。只使用给定的搜索结果，不要凭记忆猜测。",
-                extract_prompt,
-            )
+                    snippets = "\n".join(
+                        f"[{i+1}] {r.get('content', '')[:350]}"
+                        for i, r in enumerate(results_list[:8])
+                    )
+                    combined = f"搜索答案: {answer}\n\n相关内容:\n{snippets}".strip()
 
-            json_match = re.search(r'\{.*?\}', response, re.DOTALL)
-            if not json_match:
-                logger.warning("Web Search 结果解析失败")
-                return local_results
+                    logger.info(f"策略 {strategy} 返回 {len(results_list)} 条结果")
 
-            extracted = json.loads(json_match.group())
-            title = extracted.get("title")
-            artist = extracted.get("artist")
-            confidence = float(extracted.get("confidence", 0))
+                    # 用 LLM 从 web 内容中提取结构化信息
+                    from llms.siliconflow_llm import SiliconFlowLLM
+                    from prompts.music_prompts import LYRICS_IDENTIFICATION_FROM_SEARCH_PROMPT
+                    llm = SiliconFlowLLM()
 
-            if not title or confidence < 0.3:
-                logger.info(f"Web Search 识别置信度过低 ({confidence})")
-                return local_results
+                    # 使用安全的字符串替换而不是 format()，避免搜索结果中的 {} 被解析为占位符
+                    extract_prompt = LYRICS_IDENTIFICATION_FROM_SEARCH_PROMPT
+                    extract_prompt = extract_prompt.replace("{lyrics}", lyrics_content)
+                    extract_prompt = extract_prompt.replace("{search_results}", combined)
+                    response = llm.invoke_text(
+                        "你是专业的歌词识别助手，擅长通过歌词片段识别歌曲。只使用给定的搜索结果，不要凭记忆猜测。",
+                        extract_prompt,
+                    )
 
-            logger.info(f"Web Search 识别结果: {title} - {artist} (confidence={confidence})")
+                    # 调试日志
+                    logger.debug(f"LLM 响应: {response[:500]}...")
 
-            result = [{
-                "title": title,
-                "artist": artist or "未知艺术家",
-                "genre": [],
-                "mood": [],
-                "matched_lyrics": lyrics_content,
-                "similarity_score": confidence,
-                "match_type": "web_search",
-                "source": "web_search",
-                "low_confidence": confidence < 0.7,
-            }]
+                    json_match = re.search(r'\{[\s\S]*?\}', response, re.DOTALL)
+                    if not json_match:
+                        logger.warning(f"策略 {strategy} 结果解析失败，尝试下一策略")
+                        continue
 
-            # 保存到缓存
-            await set_cached_search(cache_key, "lyrics", result)
+                    json_str = json_match.group()
+                    logger.debug(f"提取的 JSON: {json_str[:300]}...")
 
-            return result
+                    try:
+                        extracted = json.loads(json_str)
+                    except json.JSONDecodeError as e:
+                        logger.warning(f"策略 {strategy} JSON解析失败: {e}, 内容: {json_str[:200]}")
+                        continue
+
+                    # 确保 extracted 是字典
+                    if not isinstance(extracted, dict):
+                        logger.warning(f"策略 {strategy} 解析结果不是字典: {type(extracted)}")
+                        continue
+
+                    title = extracted.get("title")
+                    artist = extracted.get("artist")
+                    confidence = float(extracted.get("confidence", 0))
+
+                    # 验证结果有效性
+                    if not title or confidence < 0.3:
+                        logger.info(f"策略 {strategy} 识别置信度过低 ({confidence})，尝试下一策略")
+                        continue
+
+                    # 检查是否是播客/非音乐内容
+                    result_title = (title or "").lower()
+                    result_artist = (artist or "").lower()
+                    podcast_indicators = ["podcast", "episode", "announcement", "undisclosed", "show notes"]
+                    if any(ind in result_title or ind in result_artist for ind in podcast_indicators):
+                        logger.warning(f"策略 {strategy} 返回播客内容，尝试下一策略")
+                        continue
+
+                    logger.info(f"Web Search 识别成功 (策略 {strategy}): {title} - {artist} (confidence={confidence})")
+
+                    result = [{
+                        "title": title,
+                        "artist": artist or "未知艺术家",
+                        "genre": [],
+                        "mood": [],
+                        "matched_lyrics": lyrics_content,
+                        "similarity_score": confidence,
+                        "match_type": "web_search",
+                        "source": "web_search",
+                        "search_strategy": strategy,
+                        "low_confidence": confidence < 0.7,
+                    }]
+
+                    # 保存到缓存
+                    await set_cached_search(cache_key, "lyrics", result)
+
+                    return result
+
+                except Exception as e:
+                    import traceback
+                    logger.warning(f"策略 {strategy} 执行失败: {e}")
+                    logger.debug(f"策略 {strategy} 异常详情: {traceback.format_exc()}")
+                    continue
+
+            # 所有策略都失败
+            logger.warning("所有搜索策略均未返回有效结果")
+            return local_results
 
         except Exception as e:
             logger.error(f"Web Search 歌词识别失败: {e}")
