@@ -1,0 +1,288 @@
+{
+  "version": "1.0",
+  "description": "RAG 评估数据集：查询-相关歌曲对，用于评估检索质量",
+  "created_at": "2026-03-23",
+  "cases": [
+    {
+      "id": "rag_001",
+      "query": "周杰伦的稻香",
+      "query_type": "artist_title",
+      "description": "精确匹配：艺术家+歌曲名",
+      "relevant_songs": [
+        {"title": "稻香", "artist": "周杰伦", "relevance": 1.0}
+      ],
+      "irrelevant_songs": [
+        {"title": "香草", "artist": "周杰伦", "relevance": 0.0},
+        {"title": "香水", "artist": "谢霆锋", "relevance": 0.0}
+      ],
+      "expected_in_top_3": ["稻香"],
+      "expected_in_top_5": ["稻香"],
+      "tags": ["精确匹配", "中文", "artist_title"],
+      "language": "zh"
+    },
+    {
+      "id": "rag_002",
+      "query": "稻香",
+      "query_type": "title",
+      "description": "歌曲名精确匹配",
+      "relevant_songs": [
+        {"title": "稻香", "artist": "周杰伦", "relevance": 1.0}
+      ],
+      "expected_in_top_3": ["稻香"],
+      "tags": ["精确匹配", "中文", "title"],
+      "language": "zh"
+    },
+    {
+      "id": "rag_003",
+      "query": "周杰伦",
+      "query_type": "artist",
+      "description": "艺术家搜索",
+      "relevant_songs": [
+        {"title": "稻香", "artist": "周杰伦", "relevance": 1.0},
+        {"title": "青花瓷", "artist": "周杰伦", "relevance": 1.0},
+        {"title": "晴天", "artist": "周杰伦", "relevance": 1.0},
+        {"title": "七里香", "artist": "周杰伦", "relevance": 1.0},
+        {"title": "告白气球", "artist": "周杰伦", "relevance": 1.0}
+      ],
+      "expected_min_count": 5,
+      "precision_threshold": 0.9,
+      "tags": ["艺术家", "中文", "artist"],
+      "language": "zh"
+    },
+    {
+      "id": "rag_004",
+      "query": "Lady Gaga",
+      "query_type": "artist",
+      "description": "英文艺术家搜索",
+      "relevant_songs": [
+        {"title": "Poker Face", "artist": "Lady Gaga", "relevance": 1.0},
+        {"title": "Bad Romance", "artist": "Lady Gaga", "relevance": 1.0},
+        {"title": "Shallow", "artist": "Lady Gaga", "relevance": 1.0},
+        {"title": "Born This Way", "artist": "Lady Gaga", "relevance": 1.0},
+        {"title": "Just Dance", "artist": "Lady Gaga", "relevance": 1.0}
+      ],
+      "expected_min_count": 5,
+      "precision_threshold": 0.9,
+      "tags": ["艺术家", "英文", "artist"],
+      "language": "en"
+    },
+    {
+      "id": "rag_005",
+      "query": "后来终于在眼泪中明白",
+      "query_type": "lyrics",
+      "description": "歌词片段搜索",
+      "relevant_songs": [
+        {"title": "后来", "artist": "刘若英", "relevance": 1.0}
+      ],
+      "expected_in_top_5": ["后来"],
+      "tags": ["歌词", "中文", "lyrics"],
+      "language": "zh"
+    },
+    {
+      "id": "rag_006",
+      "query": "燃烧我的卡路里",
+      "query_type": "lyrics",
+      "description": "流行歌词搜索",
+      "relevant_songs": [
+        {"title": "卡路里", "artist": "火箭少女101", "relevance": 1.0}
+      ],
+      "expected_in_top_5": ["卡路里"],
+      "tags": ["歌词", "中文", "lyrics"],
+      "language": "zh"
+    },
+    {
+      "id": "rag_007",
+      "query": "适合跑步时听的歌",
+      "query_type": "activity",
+      "description": "场景/活动推荐",
+      "relevant_songs": [
+        {"title": "Eye of the Tiger", "artist": "Survivor", "relevance": 1.0},
+        {"title": "Stronger", "artist": "Kanye West", "relevance": 0.9},
+        {"title": "Can't Hold Us", "artist": "Macklemore & Ryan Lewis", "relevance": 0.9},
+        {"title": "Till I Collapse", "artist": "Eminem", "relevance": 0.85}
+      ],
+      "expected_genres": ["rock", "electronic", "hip-hop"],
+      "min_tempo": 120,
+      "tags": ["场景", "运动", "英文", "activity"],
+      "language": "zh"
+    },
+    {
+      "id": "rag_008",
+      "query": "适合运动时听的中文歌",
+      "query_type": "activity",
+      "description": "中文运动场景推荐",
+      "relevant_songs": [
+        {"title": "倔强", "artist": "五月天", "relevance": 1.0},
+        {"title": "离开地球表面", "artist": "五月天", "relevance": 0.95},
+        {"title": "我的天空", "artist": "南征北战", "relevance": 0.9}
+      ],
+      "expected_min_count": 3,
+      "tags": ["场景", "运动", "中文", "activity"],
+      "language": "zh"
+    },
+    {
+      "id": "rag_009",
+      "query": "请回答1988主题曲",
+      "query_type": "theme",
+      "description": "影视主题曲搜索",
+      "relevant_songs": [
+        {"title": "青春", "artist": "金必&金昌完", "relevance": 1.0},
+        {"title": "惠化洞", "artist": "朴宝蓝", "relevance": 0.9},
+        {"title": "每天和你", "artist": "善宇", "relevance": 0.85}
+      ],
+      "expected_in_top_5": ["青春", "惠化洞"],
+      "tags": ["影视", "主题曲", "韩文", "theme"],
+      "language": "zh"
+    },
+    {
+      "id": "rag_010",
+      "query": "Titanic theme song",
+      "query_type": "theme",
+      "description": "英文影视主题曲",
+      "relevant_songs": [
+        {"title": "My Heart Will Go On", "artist": "Celine Dion", "relevance": 1.0}
+      ],
+      "expected_in_top_3": ["My Heart Will Go On"],
+      "tags": ["影视", "主题曲", "英文", "theme"],
+      "language": "en"
+    },
+    {
+      "id": "rag_011",
+      "query": "关于雨的歌",
+      "query_type": "topic",
+      "description": "话题/主题搜索",
+      "relevant_songs": [
+        {"title": "下雨天", "artist": "南拳妈妈", "relevance": 1.0},
+        {"title": "雨一直下", "artist": "张宇", "relevance": 1.0},
+        {"title": "雨中曲", "artist": "Gene Kelly", "relevance": 0.9},
+        {"title": "Rain", "artist": "The Beatles", "relevance": 0.85}
+      ],
+      "expected_in_top_10": ["下雨天", "雨一直下", "雨中曲"],
+      "tags": ["话题", "自然", "混合语言", "topic"],
+      "language": "zh"
+    },
+    {
+      "id": "rag_012",
+      "query": "关于分手的歌",
+      "query_type": "topic",
+      "description": "情感话题搜索",
+      "relevant_songs": [
+        {"title": "分手快乐", "artist": "梁静茹", "relevance": 1.0},
+        {"title": "体面", "artist": "于文文", "relevance": 1.0},
+        {"title": "说好不哭", "artist": "周杰伦", "relevance": 0.9}
+      ],
+      "expected_in_top_10": ["分手快乐", "体面"],
+      "tags": ["话题", "情感", "中文", "topic"],
+      "language": "zh"
+    },
+    {
+      "id": "rag_013",
+      "query": "开心的歌",
+      "query_type": "mood",
+      "description": "心情推荐",
+      "relevant_songs": [
+        {"title": "阳光宅男", "artist": "周杰伦", "relevance": 1.0},
+        {"title": "快乐崇拜", "artist": "潘玮柏", "relevance": 1.0},
+        {"title": "Happy", "artist": "Pharrell Williams", "relevance": 1.0}
+      ],
+      "expected_mood": "happy",
+      "tags": ["心情", "正面", "混合语言", "mood"],
+      "language": "zh"
+    },
+    {
+      "id": "rag_014",
+      "query": "失恋了想听点治愈的歌",
+      "query_type": "mood",
+      "description": "情感治愈推荐",
+      "relevant_songs": [
+        {"title": "可惜不是你", "artist": "梁静茹", "relevance": 0.9},
+        {"title": "岁月神偷", "artist": "金玟岐", "relevance": 0.85},
+        {"title": "Someone Like You", "artist": "Adele", "relevance": 0.8}
+      ],
+      "expected_mood": "sad_healing",
+      "tags": ["心情", "治愈", "混合语言", "mood"],
+      "language": "zh"
+    },
+    {
+      "id": "rag_015",
+      "query": "selena",
+      "query_type": "artist_partial",
+      "description": "艺术家部分名称匹配",
+      "relevant_songs": [
+        {"title": "Come & Get It", "artist": "Selena Gomez", "relevance": 1.0},
+        {"title": "Lose You to Love Me", "artist": "Selena Gomez", "relevance": 1.0},
+        {"title": "The Heart Wants What It Wants", "artist": "Selena Gomez", "relevance": 1.0}
+      ],
+      "expected_min_count": 3,
+      "precision_threshold": 0.8,
+      "tags": ["艺术家", "部分匹配", "英文", "artist"],
+      "language": "en"
+    },
+    {
+      "id": "rag_016",
+      "query": "周杰伦 关于爱情的歌曲",
+      "query_type": "artist_topic",
+      "description": "艺术家+话题组合查询",
+      "relevant_songs": [
+        {"title": "告白气球", "artist": "周杰伦", "relevance": 1.0},
+        {"title": "简单爱", "artist": "周杰伦", "relevance": 1.0},
+        {"title": "七里香", "artist": "周杰伦", "relevance": 0.95}
+      ],
+      "expected_min_count": 3,
+      "precision_threshold": 0.8,
+      "tags": ["组合查询", "艺术家", "话题", "中文"],
+      "language": "zh"
+    },
+    {
+      "id": "rag_017",
+      "query": "抖音很火的歌",
+      "query_type": "trending",
+      "description": "流行趋势搜索",
+      "relevant_songs": [
+        {"title": "学猫叫", "artist": "小潘潘", "relevance": 0.8},
+        {"title": "野狼Disco", "artist": "宝石Gem", "relevance": 0.8}
+      ],
+      "expected_min_count": 2,
+      "tags": ["趋势", "流行", "中文", "trending"],
+      "language": "zh"
+    },
+    {
+      "id": "rag_018",
+      "query": "My Heart Will Go On",
+      "query_type": "title",
+      "description": "英文歌曲名精确匹配",
+      "relevant_songs": [
+        {"title": "My Heart Will Go On", "artist": "Celine Dion", "relevance": 1.0}
+      ],
+      "expected_in_top_3": ["My Heart Will Go On"],
+      "tags": ["精确匹配", "英文", "title"],
+      "language": "en"
+    },
+    {
+      "id": "rag_019",
+      "query": "七里香",
+      "query_type": "title",
+      "description": "中文歌曲名精确匹配",
+      "relevant_songs": [
+        {"title": "七里香", "artist": "周杰伦", "relevance": 1.0}
+      ],
+      "expected_in_top_3": ["七里香"],
+      "tags": ["精确匹配", "中文", "title"],
+      "language": "zh"
+    },
+    {
+      "id": "rag_020",
+      "query": " driving music",
+      "query_type": "activity",
+      "description": "英文场景推荐",
+      "relevant_songs": [
+        {"title": "Highway to Hell", "artist": "AC/DC", "relevance": 0.9},
+        {"title": "Life is a Highway", "artist": "Tom Cochrane", "relevance": 0.9},
+        {"title": "Born to Be Wild", "artist": "Steppenwolf", "relevance": 0.85}
+      ],
+      "expected_min_count": 3,
+      "tags": ["场景", "驾驶", "英文", "activity"],
+      "language": "en"
+    }
+  ]
+}
