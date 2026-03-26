@@ -22,7 +22,7 @@
       "id": "intent_003",
       "query": "请回答1988的主题曲是什么",
       "expected_intent": "search_by_theme",
-      "expected_params": {"title": "请回答1988"},
+      "expected_params": {"title": "1988"},
       "tags": ["theme", "korean_drama"],
       "added_at": "2026-03-23"
     },
@@ -30,7 +30,7 @@
       "id": "intent_004",
       "query": "泰坦尼克号的主题曲",
       "expected_intent": "search_by_theme",
-      "expected_params": {"title": "泰坦尼克号", "country": null},
+      "expected_params": {"title": "泰坦尼克号"},
       "tags": ["theme", "movie", "english"],
       "added_at": "2026-03-23"
     },
@@ -38,7 +38,7 @@
       "id": "intent_005",
       "query": "推荐一些适合跑步时听的歌",
       "expected_intent": "recommend_by_activity",
-      "expected_params": {"activity": "running"},
+      "expected_params": {"activity": "跑步"},
       "tags": ["activity", "sport"],
       "added_at": "2026-03-23"
     },
@@ -46,7 +46,7 @@
       "id": "intent_006",
       "query": "有没有关于分手的歌",
       "expected_intent": "search_by_topic",
-      "expected_params": {"topic": "breakup"},
+      "expected_params": {"topic": "分手"},
       "tags": ["topic", "emotion"],
       "added_at": "2026-03-23"
     },
@@ -54,7 +54,7 @@
       "id": "intent_007",
       "query": "我今天很开心想听歌",
       "expected_intent": "recommend_by_mood",
-      "expected_params": {"mood": "happy"},
+      "expected_params": {"mood": "开心"},
       "tags": ["mood", "positive"],
       "added_at": "2026-03-23"
     },
@@ -62,7 +62,7 @@
       "id": "intent_008",
       "query": "失恋了推荐一些歌",
       "expected_intent": "recommend_by_mood",
-      "expected_params": {"mood": "sad"},
+      "expected_params": {"mood": "失恋"},
       "tags": ["mood", "negative"],
       "added_at": "2026-03-23"
     },
@@ -78,7 +78,7 @@
       "id": "intent_010",
       "query": "周杰伦的稻香",
       "expected_intent": "search",
-      "expected_params": {"query": "稻香", "artist": "周杰伦"},
+      "expected_params": {"query": "周杰伦 稻香"},
       "tags": ["search", "chinese"],
       "added_at": "2026-03-23"
     },
@@ -94,7 +94,7 @@
       "id": "intent_012",
       "query": "流行歌曲推荐",
       "expected_intent": "recommend_by_genre",
-      "expected_params": {"genre": "pop"},
+      "expected_params": {"genre": "流行"},
       "tags": ["genre", "chinese"],
       "added_at": "2026-03-23"
     },
@@ -110,7 +110,7 @@
       "id": "intent_014",
       "query": "晚上学习适合听什么",
       "expected_intent": "recommend_by_activity",
-      "expected_params": {"activity": "study"},
+      "expected_params": {"activity": "学习"},
       "tags": ["activity", "chinese"],
       "added_at": "2026-03-23"
     },

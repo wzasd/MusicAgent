@@ -95,7 +95,147 @@ data: {"type": "complete", "success": true}
 - **POST** `/api/recommendations` - 获取推荐（非流式）
 - **POST** `/api/playlist` - 生成歌单（非流式）
 
-## SSE事件类型
+---
+
+### Webhook 语音助手接口
+
+**POST** `/webhook/MusicAgent`
+
+专为语音助手设计的流式接口，支持意图分析、音乐搜索和播控指令，返回 SSE 流式响应。
+
+**请求体：**
+```json
+{
+  "model": "test",
+  "stream": true,
+  "messages": [
+    {"role": "user", "content": "周杰伦有哪些代表作"}
+  ],
+  "sessionId": "user_session_001"
+}
+```
+
+**参数说明：**
+
+| 字段 | 类型 | 必填 | 说明 |
+|-----|------|------|------|
+| `model` | string | 否 | 模型标识，默认 "test" |
+| `stream` | boolean | 否 | 是否流式输出，默认 true |
+| `messages` | array | 是 | 消息列表，最后一个为用户当前输入 |
+| `messages[].role` | string | 是 | 角色："user" 或 "assistant" |
+| `messages[].content` | string | 是 | 消息内容 |
+| `sessionId` | string | 否 | 会话ID，用于维护上下文和指代消解 |
+
+**响应格式（SSE）：**
+
+```
+data: {"errorCode":0,"errorMessage":"","reply":{"streamInfo":{"streamType":"start","streamingTextId":"xxx","streamContent":"正在为您搜索..."},"action":null}}
+
+data: {"errorCode":0,"errorMessage":"","reply":{"streamInfo":{"streamType":"partial","streamingTextId":"xxx","streamContent":"正在为您查找周杰伦的歌曲..."},"action":null}}
+
+data: {"errorCode":0,"errorMessage":"","reply":{"streamInfo":{"streamType":"final","streamingTextId":"xxx","streamContent":"周杰伦的歌曲有：\n1. 《青花瓷》- 周杰伦\n2. 《一路向北》- 周杰伦\n...\n\n请告诉我您想播放第几首？"},"action":null}}
+```
+
+**流类型说明：**
+
+| streamType | 说明 |
+|-----------|------|
+| `start` | 开始处理 |
+| `partial` | 中间状态更新 |
+| `final` | 最终结果 |
+
+**播控动作（Action）：**
+
+当需要播放歌曲时，`action` 字段包含播放指令：
+
+```json
+{
+  "action": [{
+    "header": {
+      "namespace": "Media.AudioVideo",
+      "name": "PLAY_SEARCH_SONG"
+    },
+    "payload": {
+      "callParams": {
+        "forwardSlot": [
+          {"key": "songName", "value": ["青花瓷"]},
+          {"key": "artist", "value": ["周杰伦"]}
+        ]
+      }
+    }
+  }]
+}
+```
+
+**交互流程示例：**
+
+**场景1：列表展示（无播放动作）**
+```bash
+curl -X POST http://localhost:8501/webhook/MusicAgent \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "test",
+    "stream": true,
+    "messages": [{"role": "user", "content": "周杰伦有哪些代表作"}],
+    "sessionId": "session_001"
+  }'
+```
+响应：返回歌曲列表，`action` 为 null
+
+**场景2：选择播放（有播放动作）**
+```bash
+curl -X POST http://localhost:8501/webhook/MusicAgent \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "test",
+    "stream": true,
+    "messages": [{"role": "user", "content": "第一首"}],
+    "sessionId": "session_001"
+  }'
+```
+响应：返回播放指令，包含 `PLAY_SEARCH_SONG` 动作
+
+**场景3：直接播放（有播放动作）**
+```bash
+curl -X POST http://localhost:8501/webhook/MusicAgent \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "test",
+    "stream": true,
+    "messages": [{"role": "user", "content": "播放周杰伦的稻香"}],
+    "sessionId": "session_002"
+  }'
+```
+响应：直接返回播放指令
+
+**支持的意图类型：**
+
+| 意图 | 示例查询 | 行为 |
+|-----|---------|------|
+| `search` | "播放稻香" | 直接搜索播放 |
+| `search_by_lyrics` | "歌词是后来终于在眼泪中明白" | 歌词搜索 |
+| `search_by_theme` | "泰坦尼克号主题曲" | 影视主题曲搜索 |
+| `search_by_topic` | "关于雨的歌" | 话题搜索 |
+| `recommend_by_artist` | "周杰伦的歌" | 艺术家歌曲 |
+| `recommend_by_mood` | "推荐几首开心的歌" | 心情推荐 |
+| `recommend_by_activity` | "适合跑步的歌" | 场景推荐 |
+| `anaphora_resolution` | "第一首" | 指代消解（需要sessionId） |
+
+**架构说明：**
+
+Webhook 接口采用主/子 Agent 架构：
+- **主 Agent** (`webhook_handler.py`)：处理意图分析、对话管理、决策逻辑
+- **子 Agent** (`music_agent_service.py`)：执行具体的音乐搜索和推荐任务
+- **复用率**：约 82% 的代码复用现有工具层（`tools/music_tools.py`）
+
+**注意事项：**
+
+1. **sessionId 重要性**：用于维护会话上下文，实现指代消解（如"第一首"）
+2. **流式响应**：始终使用 SSE 格式，即使 `stream=false` 也返回单条 SSE 数据
+3. **超时设置**：建议客户端设置 30 秒超时，LLM 处理可能需要时间
+4. **错误处理**：`errorCode` 非 0 时表示错误，`errorMessage` 包含详情
+
+---
 
 | 事件类型 | 说明 |
 |---------|------|
@@ -149,9 +289,11 @@ while (true) {
 
 ```
 api/
-├── server.py          # FastAPI主服务器
-├── start_server.py    # 启动脚本
-└── README.md         # 本文档
+├── server.py              # FastAPI主服务器
+├── webhook_handler.py     # Webhook语音助手接口（主Agent）
+├── music_agent_service.py # 音乐Agent服务（子Agent）
+├── start_server.py        # 启动脚本
+└── README.md             # 本文档
 ```
 
 ### 调试

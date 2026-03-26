@@ -129,13 +129,16 @@ ANAPHORA_RESOLUTION_PROMPT = """你是一个专业的对话理解助手，负责
 2. 判断用户是想**查看列表**还是**直接播放**：
    - 查看列表：用户问"有哪些"、"都有什么"、"推荐几首"等探索性查询
    - 直接播放：用户说"播放"、"我想听"、"来一首"等明确播放意图
-3. 如果用户输入包含指代（如"第一首"、"第二个"、"播放它"等），结合历史对话理解具体指代什么
+3. **关键：指代消解处理**
+   - 如果用户输入包含指代（如"第一首"、"第二个"、"播放它"等），必须结合历史对话理解具体指代什么
+   - **如果检测到选择意图（如"第一首"、"播放第二首"），把 resolved_query 直接改写成具体歌曲**
+   - 例如：历史列表中有 "1. Eye of the Tiger by Survivor"，用户说"第一首" → resolved_query 应该是 "播放 Eye of the Tiger by Survivor"
 4. 返回结构化的意图分析结果
 
 【输出格式】
 必须返回纯JSON：
 {{
-    "intent_type": "search|recommend_by_artist|recommend_by_mood|recommend_by_activity|general_chat|select_from_results|cancel",
+    "intent_type": "search|search_by_lyrics|recommend_by_artist|recommend_by_mood|recommend_by_activity|general_chat|select_from_results|cancel",
     "action_type": "list|play|cancel",  // list=展示列表, play=直接播放, cancel=用户拒绝/取消
     "parameters": {{
         // 根据意图类型填充
@@ -143,15 +146,16 @@ ANAPHORA_RESOLUTION_PROMPT = """你是一个专业的对话理解助手，负责
         "artist": "艺术家",
         "mood": "心情",
         "activity": "活动",
-        "selection_index": null,
-        "selection_type": null
+        "selection_index": null,  // 如果选择第一首填0，第二首填1，以此类推
+        "selection_type": null    // 可选：first, second, third, last
     }},
-    "resolved_query": "解析后的完整查询",
+    "resolved_query": "解析后的完整查询，如果是选择意图，这里应该是具体歌曲名如'播放Eye of the Tiger'",
     "context": "上下文说明"
 }}
 
 【意图类型说明】
 - search: 搜索特定歌曲
+- search_by_lyrics: 按歌词搜索歌曲（用户提到"歌词"、"lyric"或引用具体歌词内容）
 - recommend_by_artist: 按艺术家推荐
 - recommend_by_mood: 按心情推荐
 - recommend_by_activity: 按活动场景推荐
@@ -167,19 +171,34 @@ ANAPHORA_RESOLUTION_PROMPT = """你是一个专业的对话理解助手，负责
 - "第一首" → action_type: "play"
 - "我不听了" / "算了" → action_type: "cancel"
 
-【示例】
+【指代消解示例】
 历史:
-user: 周杰伦有哪些代表作
-assistant: 周杰伦的代表作有《晴天》、《七里香》、《稻香》...
+user: 推荐几首跑步歌曲
+assistant: 1. Eye of the Tiger by Survivor\n2. Stronger by Kanye West\n3. Can't Hold Us by Macklemore
 当前: 第一首
 
 输出:
 {{
-    "intent_type": "search",
+    "intent_type": "select_from_results",
     "action_type": "play",
-    "parameters": {{"query": "晴天", "artist": "周杰伦", "selection_index": 0}},
-    "resolved_query": "播放周杰伦的《晴天》",
-    "context": "用户想播放之前提到的第一首歌曲"
+    "parameters": {{"query": "Eye of the Tiger", "artist": "Survivor", "selection_index": 0, "selection_type": "first"}},
+    "resolved_query": "播放 Eye of the Tiger by Survivor",
+    "context": "用户想播放列表中的第一首歌"
+}}
+
+【另一个指代消解示例】
+历史:
+user: 推荐几首跑步歌曲
+assistant: 1. Eye of the Tiger by Survivor\n2. Stronger by Kanye West
+当前: 播放第二首
+
+输出:
+{{
+    "intent_type": "select_from_results",
+    "action_type": "play",
+    "parameters": {{"query": "Stronger", "artist": "Kanye West", "selection_index": 1, "selection_type": "second"}},
+    "resolved_query": "播放 Stronger by Kanye West",
+    "context": "用户想播放列表中的第二首歌"
 }}
 
 【重要】只返回纯JSON，不要包含任何其他文字。"""
@@ -218,39 +237,87 @@ async def analyze_intent_with_context(
 
         logger.info(f"意图分析结果: {intent_data.get('intent_type')}, 解析后: {intent_data.get('resolved_query')}")
 
-        # 处理选择类意图
-        if intent_data.get("intent_type") == "select_from_results" and last_results:
-            params = intent_data.get("parameters", {})
-            selection_type = params.get("selection_type")
-            selection_index = params.get("selection_index")
+        # 处理选择类意图 - 无论intent_type是什么，只要有selection_index就从上次结果中选择
+        params = intent_data.get("parameters", {})
+        action_type = intent_data.get("action_type", "play")
+        selection_index = params.get("selection_index")
+        selection_type = params.get("selection_type")
 
-            # 根据选择类型确定索引
-            if selection_index is not None and 0 <= selection_index < len(last_results):
-                selected = last_results[selection_index]
-            elif selection_type == "first" and len(last_results) > 0:
+        # 如果意图包含选择意图或resolved_query包含选择关键词，但没有selection_index，尝试解析
+        resolved = intent_data.get("resolved_query", "")
+        intent_type_value = intent_data.get("intent_type", "")
+
+        # 检查是否是选择意图（select_from_results）或包含选择关键词
+        is_selection_intent = intent_type_value == "select_from_results"
+        has_selection_keywords = any(kw in resolved for kw in [
+            "第一首", "第二首", "第三首", "最后一首",
+            "first", "second", "third", "last",
+            "第 1", "第 2", "第 3", "1.", "2.", "3."
+        ])
+
+        logger.info(f"[Debug] intent={intent_type_value}, is_selection={is_selection_intent}, has_keywords={has_selection_keywords}, last_results={len(last_results) if last_results else 0}")
+
+        # 只有 last_results 存在时才尝试从列表中选择
+        # 对于 select_from_results 意图，优先信任 LLM 提供的 query/artist 参数
+        if last_results and (is_selection_intent or has_selection_keywords):
+            if selection_index is not None:
+                # 有明确的选择索引
+                # 检查 LLM 是否已经提供了具体的歌曲名（通过改写）
+                llm_query = params.get("query", "").strip()
+                llm_artist = params.get("artist", "").strip()
+
+                if is_selection_intent and llm_query and llm_query not in ["第一首", "第二首", "第三首", "最后一首"]:
+                    # LLM 已经改写了查询，提供具体歌曲名，保持 select_from_results 意图
+                    # 这样后续会用 LLM 提供的 query/artist 直接搜索
+                    logger.info(f"[Intent] LLM已改写查询，使用改写结果: {llm_query} by {llm_artist}")
+                    # 保持 intent_type = "select_from_results"，不移除 selection_index
+                elif 0 <= selection_index < len(last_results):
+                    # 从列表中选择
+                    selected = last_results[selection_index]
+                    # 转换为搜索意图，这样后续会播放选中的歌曲
+                    intent_data["intent_type"] = "search"
+                    intent_data["parameters"] = {
+                        "query": selected.get("title", ""),
+                        "artist": selected.get("artist", ""),
+                        "selection_index": selection_index
+                    }
+                    intent_data["resolved_query"] = f"播放《{selected.get('title')}》- {selected.get('artist')}"
+                    intent_data["selected_index"] = selection_index
+                    logger.info(f"意图转换: 从上次结果中选择第 {selection_index+1} 首 - {selected.get('title')}")
+            elif is_selection_intent and not params.get("query"):
+                # select_from_results 但没有提供具体歌曲名，也没有索引，默认第一首
                 selected = last_results[0]
-                selection_index = 0
-            elif selection_type == "second" and len(last_results) > 1:
-                selected = last_results[1]
-                selection_index = 1
-            elif selection_type == "third" and len(last_results) > 2:
-                selected = last_results[2]
-                selection_index = 2
-            elif selection_type == "last" and len(last_results) > 0:
-                selected = last_results[-1]
-                selection_index = len(last_results) - 1
-            else:
-                selected = None
+                intent_data["intent_type"] = "select_from_results"  # 保持原意图，让后续用 LLM 改写
+                intent_data["parameters"]["query"] = selected.get("title", "")
+                intent_data["parameters"]["artist"] = selected.get("artist", "")
+                intent_data["parameters"]["selection_index"] = 0
+                intent_data["parameters"]["selection_type"] = "first"
+                intent_data["resolved_query"] = f"播放 {selected.get('title')} by {selected.get('artist')}"
+                logger.info(f"默认选择第一首: {selected.get('title')}")
 
-            if selected:
-                # 转换为搜索意图
+        # 模糊指代消解：如果action_type是play但没有具体查询参数，且有上次结果，则默认播放第一首
+        elif last_results and action_type == "play":
+            query = params.get("query", "")
+            artist = params.get("artist", "")
+            # 检查是否有实际的搜索参数（非空且不是模糊指代词）
+            fuzzy_words = ["it", "that", "this", "one", "那首", "那个", "这个", "它"]
+            is_fuzzy = (
+                not query or
+                query.lower() in fuzzy_words or
+                any(word in query.lower() for word in fuzzy_words)
+            )
+
+            if is_fuzzy and len(last_results) > 0:
+                selected = last_results[0]
+                logger.info(f"模糊指代消解: 用户说'{query}'，默认选择上次列表第1首 - {selected.get('title')}")
                 intent_data["intent_type"] = "search"
                 intent_data["parameters"] = {
                     "query": selected.get("title", ""),
-                    "artist": selected.get("artist", "")
+                    "artist": selected.get("artist", ""),
+                    "selection_index": 0
                 }
                 intent_data["resolved_query"] = f"播放《{selected.get('title')}》- {selected.get('artist')}"
-                intent_data["selected_index"] = selection_index
+                intent_data["selected_index"] = 0
 
         return intent_data
 
@@ -294,6 +361,50 @@ def _clean_json_from_llm(llm_output: str) -> str:
 
 
 # ========== 流式响应生成器 ==========
+
+def _extract_songs_from_history(messages: List[Dict[str, str]]) -> List[Dict[str, Any]]:
+    """从历史消息中解析歌曲列表
+
+    支持多种格式:
+    1. 'Eye of the Tiger' by Survivor
+    2. "Stronger" by Kanye West
+    3. Eye of the Tiger by Survivor (无引号)
+    """
+    import re
+
+    songs = []
+    logger.info(f"[Extract] 开始提取歌曲，消息数: {len(messages)}")
+
+    for msg in messages:
+        content = msg.get("content", "")
+        role = msg.get("role", "unknown")
+
+        # 跳过空内容
+        if not content:
+            continue
+
+        # 匹配格式: 数字. '歌曲名' by 艺术家 或 数字. "歌曲名" by 艺术家
+        pattern_quoted = r"\d+\.\s*['\"](.+?)['\"]\s+by\s+(\S+)"
+        matches = re.findall(pattern_quoted, content)
+        for title, artist in matches:
+            songs.append({"title": title.strip(), "artist": artist.strip()})
+            logger.info(f"[Extract] 带引号匹配: {title} by {artist}")
+
+        # 匹配无引号格式: 数字. 歌曲名 by 艺术家
+        # 使用 negative lookahead 避免重复匹配已匹配的
+        pattern_unquoted = r"\d+\.\s*([^'\"\n\d][^'\"\n]*?)\s+by\s+([^\n,]+)"
+        matches_unquoted = re.findall(pattern_unquoted, content)
+        for title, artist in matches_unquoted:
+            title_stripped = title.strip()
+            artist_stripped = artist.strip()
+            # 检查是否已存在
+            if not any(s["title"] == title_stripped and s["artist"] == artist_stripped for s in songs):
+                songs.append({"title": title_stripped, "artist": artist_stripped})
+                logger.info(f"[Extract] 无引号匹配: {title_stripped} by {artist_stripped}")
+
+    logger.info(f"[Extract] 总共提取 {len(songs)} 首歌曲")
+    return songs
+
 
 def generate_streaming_text_id() -> str:
     """生成流文本ID"""
@@ -395,57 +506,6 @@ async def stream_webhook_response(
         resolved_query = intent_data.get("resolved_query", current_input)
         action_type = intent_data.get("action_type", "play")
 
-        # ========== 处理从列表中选择歌曲 ==========
-        # 检查是否有选择索引（无论意图类型是什么）
-        selection_index = parameters.get("selection_index")
-        if selection_index is not None and context.last_search_results:
-            try:
-                idx = int(selection_index)
-                if 0 <= idx < len(context.last_search_results):
-                    selected = context.last_search_results[idx]
-                    logger.info(f"从列表中选择第 {idx+1} 首: {selected['title']} - {selected['artist']}")
-
-                    # 创建播放动作
-                    song = Song(title=selected['title'], artist=selected['artist'])
-                    action = await create_play_action(song)
-
-                    new_segment = f"Now playing '{selected['title']}' by {selected['artist']}"
-                    accumulated_content = accumulated_content + new_segment
-
-                    final_response = MusicAgentWebhookResponse(
-                        errorCode=0,
-                        errorMessage="",
-                        reply=WebhookReply(
-                            streamInfo=StreamInfo(
-                                streamType="final",
-                                streamingTextId=streaming_id,
-                                streamContent=accumulated_content
-                            ),
-                            action=[action]
-                        )
-                    )
-
-                    # 记录日志
-                    log_entry = {
-                        "action": "webhook_search",
-                        "original_query": current_input,
-                        "intent": intent_type,
-                        "parameters": parameters,
-                        "result_count": 1,
-                        "elapsed_ms": round((time.time() - start_time) * 1000, 2),
-                        "status": "success",
-                        "source": "selection",
-                        "songs": [{"title": selected['title'], "artist": selected['artist']}],
-                    }
-                    add_search_log(log_entry)
-
-                    yield f"data: {final_response.model_dump_json(ensure_ascii=False)}\n\n"
-                    return
-                else:
-                    logger.warning(f"选择索引 {idx} 超出范围 (0-{len(context.last_search_results)-1})")
-            except (ValueError, TypeError) as e:
-                logger.warning(f"无效的选择索引: {selection_index}, 错误: {e}")
-
         # 处理取消/拒绝意图
         if intent_type == "cancel" or action_type == "cancel":
             # 清理上下文
@@ -499,6 +559,54 @@ async def stream_webhook_response(
         if intent_type == "search":
             query = parameters.get("query", current_input)
             artist = parameters.get("artist")  # 获取艺术家参数
+            selection_index = parameters.get("selection_index")
+
+            # 如果是从上次结果中选择（有selection_index），直接播放而不重新搜索
+            if selection_index is not None and context.last_search_results:
+                try:
+                    idx = int(selection_index)
+                    if 0 <= idx < len(context.last_search_results):
+                        selected = context.last_search_results[idx]
+                        logger.info(f"直接播放上次列表第 {idx+1} 首: {selected['title']} - {selected['artist']}")
+
+                        song = Song(title=selected['title'], artist=selected['artist'])
+                        action = await create_play_action(song)
+
+                        new_segment = f"Now playing '{selected['title']}' by {selected['artist']}"
+                        accumulated_content = accumulated_content + new_segment
+
+                        final_response = MusicAgentWebhookResponse(
+                            errorCode=0,
+                            errorMessage="",
+                            reply=WebhookReply(
+                                streamInfo=StreamInfo(
+                                    streamType="final",
+                                    streamingTextId=streaming_id,
+                                    streamContent=accumulated_content
+                                ),
+                                action=[action]
+                            )
+                        )
+
+                        # 记录日志
+                        log_entry = {
+                            "action": "webhook_search",
+                            "original_query": current_input,
+                            "intent": "select_from_results",
+                            "parameters": parameters,
+                            "result_count": 1,
+                            "elapsed_ms": round((time.time() - start_time) * 1000, 2),
+                            "status": "success",
+                            "source": "selection",
+                            "songs": [{"title": selected['title'], "artist": selected['artist']}],
+                        }
+                        add_search_log(log_entry)
+
+                        yield f"data: {final_response.model_dump_json(ensure_ascii=False)}\n\n"
+                        return
+                except (ValueError, TypeError) as e:
+                    logger.warning(f"无效的选择索引: {selection_index}, 错误: {e}")
+
             query = _clean_search_query(query)
 
             # 检测是否为歌词搜索
@@ -531,6 +639,143 @@ async def stream_webhook_response(
                 )
             else:
                 result = await agent_service.search_songs(query=query, limit=5, is_lyrics=is_lyrics)
+
+        elif intent_type == "search_by_lyrics":
+            # 歌词搜索 - 专门处理分支
+            query = parameters.get("query", current_input)
+            # 从查询中提取纯歌词内容（去除前缀如 "i want to hear the song with the lyric..."）
+            from tools.lyrics_search import get_lyrics_search_engine
+            lyrics_engine = get_lyrics_search_engine()
+            lyrics_content = lyrics_engine.extract_lyrics_content(query)
+            if not lyrics_content:
+                lyrics_content = query
+
+            logger.info(f"[LyricsSearch] 歌词搜索: query={query}, lyrics={lyrics_content[:50]}...")
+
+            # 构建新内容并追加到累计内容
+            new_segment = f"Searching for song with lyrics..."
+            accumulated_content = accumulated_content + new_segment
+
+            partial_response = MusicAgentWebhookResponse(
+                errorCode=0,
+                errorMessage="",
+                reply=WebhookReply(
+                    streamInfo=StreamInfo(
+                        streamType="partial",
+                        streamingTextId=streaming_id,
+                        streamContent=accumulated_content
+                    )
+                )
+            )
+            yield f"data: {partial_response.model_dump_json(ensure_ascii=False)}\n\n"
+
+            # 调用子 agent 进行歌词搜索，强制 is_lyrics=True
+            result = await agent_service.search_songs(query=lyrics_content, limit=5, is_lyrics=True)
+
+        elif intent_type == "select_from_results":
+            # LLM 已经通过指代消解提供了具体歌曲名，直接搜索播放
+            query = parameters.get("query", current_input)
+            artist = parameters.get("artist")
+
+            logger.info(f"[SelectFromResults] LLM改写后直接搜索: query={query}, artist={artist}")
+
+            # 清理查询词
+            query = _clean_search_query(query)
+
+            if not query or query.strip() == "":
+                # 如果LLM没有提供具体歌曲名，fallback到通用搜索
+                logger.warning(f"[SelectFromResults] LLM未提供具体歌曲名，使用原始输入: {current_input}")
+                query = _clean_search_query(current_input)
+
+            # 构建响应
+            if artist:
+                new_segment = f"Playing '{query}' by {artist}..."
+            else:
+                new_segment = f"Playing '{query}'..."
+            accumulated_content = accumulated_content + new_segment
+
+            partial_response = MusicAgentWebhookResponse(
+                errorCode=0,
+                errorMessage="",
+                reply=WebhookReply(
+                    streamInfo=StreamInfo(
+                        streamType="partial",
+                        streamingTextId=streaming_id,
+                        streamContent=accumulated_content
+                    )
+                )
+            )
+            yield f"data: {partial_response.model_dump_json(ensure_ascii=False)}\n\n"
+
+            # 使用改写后的歌曲名直接搜索
+            if artist:
+                result = await agent_service.search_songs_by_artist_with_title(
+                    artist=artist, title=query, limit=5
+                )
+            else:
+                result = await agent_service.search_songs(query=query, limit=5)
+
+            # 如果找到结果，直接播放第一首
+            if result and result.songs:
+                song = result.songs[0]
+                action = await create_play_action(song)
+
+                new_segment = f"Now playing '{song.title}' by {song.artist}"
+                accumulated_content = accumulated_content + new_segment
+
+                final_response = MusicAgentWebhookResponse(
+                    errorCode=0,
+                    errorMessage="",
+                    reply=WebhookReply(
+                        streamInfo=StreamInfo(
+                            streamType="final",
+                            streamingTextId=streaming_id,
+                            streamContent=accumulated_content
+                        ),
+                        action=[action]
+                    )
+                )
+
+                # 记录日志
+                log_entry = {
+                    "action": "webhook_search",
+                    "original_query": current_input,
+                    "intent": "select_from_results",
+                    "parameters": parameters,
+                    "result_count": 1,
+                    "elapsed_ms": round((time.time() - start_time) * 1000, 2),
+                    "status": "success",
+                    "source": "llm_rewrite",
+                    "songs": [{"title": song.title, "artist": song.artist}],
+                }
+                add_search_log(log_entry)
+
+                # 更新上下文的搜索结果
+                context.last_search_results = [
+                    {"title": s.title, "artist": s.artist} for s in result.songs
+                ]
+
+                yield f"data: {final_response.model_dump_json(ensure_ascii=False)}\n\n"
+                return
+            else:
+                # 没找到结果，返回提示
+                new_segment = f"Sorry, couldn't find '{query}'"
+                accumulated_content = accumulated_content + new_segment
+
+                final_response = MusicAgentWebhookResponse(
+                    errorCode=0,
+                    errorMessage="",
+                    reply=WebhookReply(
+                        streamInfo=StreamInfo(
+                            streamType="final",
+                            streamingTextId=streaming_id,
+                            streamContent=accumulated_content
+                        ),
+                        action=None
+                    )
+                )
+                yield f"data: {final_response.model_dump_json(ensure_ascii=False)}\n\n"
+                return
 
         elif intent_type == "recommend_by_artist":
             artist = parameters.get("artist", current_input)
@@ -584,6 +829,53 @@ async def stream_webhook_response(
 
         elif intent_type == "recommend_by_activity":
             activity = parameters.get("activity", "relaxing")
+            selection_index = parameters.get("selection_index")
+
+            # 如果是从上次结果中选择，直接播放
+            if selection_index is not None and context.last_search_results:
+                try:
+                    idx = int(selection_index)
+                    if 0 <= idx < len(context.last_search_results):
+                        selected = context.last_search_results[idx]
+                        logger.info(f"[Activity] 直接播放上次列表第 {idx+1} 首: {selected['title']} - {selected['artist']}")
+
+                        song = Song(title=selected['title'], artist=selected['artist'])
+                        action = await create_play_action(song)
+
+                        new_segment = f"Now playing '{selected['title']}' by {selected['artist']}"
+                        accumulated_content = accumulated_content + new_segment
+
+                        final_response = MusicAgentWebhookResponse(
+                            errorCode=0,
+                            errorMessage="",
+                            reply=WebhookReply(
+                                streamInfo=StreamInfo(
+                                    streamType="final",
+                                    streamingTextId=streaming_id,
+                                    streamContent=accumulated_content
+                                ),
+                                action=[action]
+                            )
+                        )
+
+                        # 记录日志
+                        log_entry = {
+                            "action": "webhook_search",
+                            "original_query": current_input,
+                            "intent": "select_from_results",
+                            "parameters": parameters,
+                            "result_count": 1,
+                            "elapsed_ms": round((time.time() - start_time) * 1000, 2),
+                            "status": "success",
+                            "source": "selection",
+                            "songs": [{"title": selected['title'], "artist": selected['artist']}],
+                        }
+                        add_search_log(log_entry)
+
+                        yield f"data: {final_response.model_dump_json(ensure_ascii=False)}\n\n"
+                        return
+                except (ValueError, TypeError) as e:
+                    logger.warning(f"无效的选择索引: {selection_index}, 错误: {e}")
 
             # 构建新内容并追加到累计内容
             new_segment = f"Recommending songs for {activity}..."
@@ -820,9 +1112,12 @@ class SessionManager:
     def get_or_create_context(self, session_id: str, messages: List[Dict[str, str]]) -> ConversationContext:
         """获取或创建会话上下文"""
         if session_id not in self._sessions:
+            # 从历史消息中解析歌曲列表
+            extracted_songs = _extract_songs_from_history(messages)
             self._sessions[session_id] = ConversationContext(
                 session_id=session_id,
-                messages=messages
+                messages=messages,
+                last_search_results=extracted_songs if extracted_songs else None
             )
         else:
             # 更新消息历史
