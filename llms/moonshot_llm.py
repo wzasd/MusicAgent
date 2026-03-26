@@ -1,0 +1,223 @@
+"""
+Moonshot LLM实现
+使用Moonshot API进行文本生成
+"""
+
+import os
+from typing import Optional, Dict, Any
+from openai import OpenAI
+from langchain_openai import ChatOpenAI
+from .base import BaseLLM
+
+
+class MoonshotLLM(BaseLLM):
+    """Moonshot LLM实现类"""
+
+    def __init__(self, api_key: Optional[str] = None, model_name: Optional[str] = None):
+        """
+        初始化Moonshot客户端
+
+        Args:
+            api_key: Moonshot API密钥，如果不提供则从环境变量或setting.json读取
+            model_name: 模型名称，默认使用kimi-k2.5
+        """
+        if api_key is None:
+            api_key = os.getenv("MOONSHOT_API_KEY")
+            # 如果环境变量中没有，尝试从 setting.json 读取
+            if not api_key:
+                try:
+                    from config.settings_loader import load_settings_from_json
+                    settings = load_settings_from_json()
+                    api_key = settings.get("MOONSHOT_API_KEY")
+                except:
+                    pass
+            if not api_key:
+                raise ValueError("Moonshot API Key 未找到！请设置 MOONSHOT_API_KEY 环境变量或在 setting.json 中配置")
+
+        super().__init__(api_key, model_name)
+
+        # 从 setting.json 读取 base_url，如果没有则使用默认值
+        base_url = os.getenv("MOONSHOT_BASE_URL", "https://api.moonshot.cn/v1")
+        if base_url == "https://api.moonshot.cn/v1":
+            try:
+                from config.settings_loader import load_settings_from_json
+                settings = load_settings_from_json()
+                base_url = settings.get("MOONSHOT_BASE_URL", base_url)
+            except:
+                pass
+
+        # 初始化OpenAI客户端，使用Moonshot的endpoint
+        self.client = OpenAI(
+            api_key=self.api_key,
+            base_url=base_url
+        )
+
+        self.default_model = model_name or self.get_default_model()
+
+    def get_default_model(self) -> str:
+        """获取默认模型名称"""
+        # 优先使用环境变量中的模型配置
+        model = os.getenv("MOONSHOT_CHAT_MODEL")
+        if model:
+            return model
+        # 如果没有环境变量，尝试从 setting.json 读取
+        try:
+            from config.settings_loader import load_settings_from_json
+            settings = load_settings_from_json()
+            return settings.get("MOONSHOT_CHAT_MODEL", "kimi-k2.5")
+        except:
+            # 如果都失败，使用默认值
+            return "kimi-k2.5"
+
+    def invoke(self, system_prompt: str, user_prompt: str, **kwargs) -> Dict[str, Any]:
+        """
+        调用Moonshot API生成回复
+
+        Args:
+            system_prompt: 系统提示词
+            user_prompt: 用户输入
+            **kwargs: 其他参数，如temperature、max_tokens等
+
+        Returns:
+            包含回复文本和token使用量的字典
+        """
+        try:
+            # 构建消息
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ]
+
+            # 设置默认参数
+            params = {
+                "model": self.default_model,
+                "messages": messages,
+                "temperature": kwargs.get("temperature", 0.7),
+                "max_tokens": kwargs.get("max_tokens", 4000),
+                "stream": False
+            }
+
+            # 调用API
+            response = self.client.chat.completions.create(**params)
+
+            # 提取回复内容
+            if response.choices and response.choices[0].message:
+                content = response.choices[0].message.content
+
+                # 提取token使用量
+                usage = {}
+                if hasattr(response, 'usage') and response.usage:
+                    usage = {
+                        'prompt_tokens': response.usage.prompt_tokens or 0,
+                        'completion_tokens': response.usage.completion_tokens or 0,
+                        'total_tokens': response.usage.total_tokens or 0,
+                    }
+
+                return {
+                    'content': self.validate_response(content),
+                    'usage': usage,
+                    'model': self.default_model,
+                }
+            else:
+                return {'content': '', 'usage': {}, 'model': self.default_model}
+
+        except Exception as e:
+            print(f"Moonshot API调用错误: {str(e)}")
+            raise e
+
+    def invoke_text(self, system_prompt: str, user_prompt: str, **kwargs) -> str:
+        """只返回文本内容的便捷方法（向后兼容）"""
+        result = self.invoke(system_prompt, user_prompt, **kwargs)
+        return result.get('content', '')
+
+    async def ainvoke(self, prompt: str, **kwargs) -> str:
+        """
+        异步调用LLM（兼容LangChain接口）
+
+        Args:
+            prompt: 提示词
+            **kwargs: 其他参数
+
+        Returns:
+            生成的文本内容
+        """
+        import asyncio
+        loop = asyncio.get_event_loop()
+        # 在线程池中运行同步的invoke
+        result = await loop.run_in_executor(
+            None,
+            lambda: self.invoke("You are a helpful assistant.", prompt, **kwargs)
+        )
+        if isinstance(result, dict):
+            return result.get('content', '')
+        return str(result)
+
+    def get_model_info(self) -> Dict[str, Any]:
+        """
+        获取当前模型信息
+
+        Returns:
+            模型信息字典
+        """
+        return {
+            "provider": "Moonshot",
+            "model": self.default_model,
+            "api_base": "https://api.moonshot.cn/v1"
+        }
+
+
+def get_chat_model() -> ChatOpenAI:
+    """
+    获取LangChain兼容的聊天模型（使用Moonshot）
+
+    Returns:
+        ChatOpenAI实例
+    """
+    # 优先从环境变量读取 API Key
+    api_key = os.getenv("MOONSHOT_API_KEY")
+
+    # 如果环境变量中没有，尝试从 setting.json 读取
+    if not api_key:
+        try:
+            from config.settings_loader import load_settings_from_json
+            settings = load_settings_from_json()
+            api_key = settings.get("MOONSHOT_API_KEY")
+        except:
+            pass
+
+    if not api_key:
+        raise ValueError("Moonshot API Key 未找到！请设置 MOONSHOT_API_KEY 环境变量或在 setting.json 中配置")
+
+    # 优先使用环境变量中的模型配置
+    model_name = os.getenv("MOONSHOT_CHAT_MODEL")
+
+    # 如果环境变量中没有，尝试从 setting.json 读取
+    if not model_name:
+        try:
+            from config.settings_loader import load_settings_from_json
+            settings = load_settings_from_json()
+            model_name = settings.get("MOONSHOT_CHAT_MODEL")
+        except:
+            pass
+
+    # 如果还是没有，使用默认值
+    if not model_name:
+        model_name = "kimi-k2.5"
+
+    # 从 setting.json 读取 base_url，如果没有则使用默认值
+    base_url = os.getenv("MOONSHOT_BASE_URL", "https://api.moonshot.cn/v1")
+    if base_url == "https://api.moonshot.cn/v1":
+        try:
+            from config.settings_loader import load_settings_from_json
+            settings = load_settings_from_json()
+            base_url = settings.get("MOONSHOT_BASE_URL", base_url)
+        except:
+            pass
+
+    return ChatOpenAI(
+        api_key=api_key,
+        base_url=base_url,
+        model=model_name,
+        temperature=0.7,
+        max_tokens=4000
+    )
