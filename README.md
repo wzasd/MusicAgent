@@ -42,7 +42,7 @@
 - **搜索日志追踪**：在日志页面查看每次请求的意图、搜索源、搜索关键词与结果，方便调试与观察
 - **RESTful API**：提供完整的 API 接口，支持前后端分离与系统集成
 
-项目默认使用硅基流动提供的 DeepSeek / Qwen 模型，也可接入其他兼容 OpenAI 接口风格的 LLM 服务。
+项目支持多 LLM 提供商：默认使用硅基流动（SiliconFlow）提供的 DeepSeek / Qwen 模型，也可通过配置切换到 Moonshot AI（Kimi K2.5）或其他兼容 OpenAI 接口风格的 LLM 服务。通过 `setting.json` 中的 `DEFAULT_LLM_PROVIDER` 字段即可切换提供商。
 
 ### 主页面预览
 
@@ -125,10 +125,17 @@ ollama pull bge-m3:latest
 ```json
 {
   "settings": {
+    "DEFAULT_LLM_PROVIDER": "siliconflow",
+
     "SILICONFLOW_API_KEY": "your-siliconflow-api-key",
     "SILICONFLOW_BASE_URL": "https://api.siliconflow.cn/v1",
     "SILICONFLOW_CHAT_MODEL": "Qwen/Qwen2.5-72B-Instruct",
     "SILICONFLOW_EMBED_MODEL": "BAAI/bge-m3",
+
+    "MOONSHOT_API_KEY": "your-moonshot-api-key",
+    "MOONSHOT_BASE_URL": "https://api.moonshot.cn/v1",
+    "MOONSHOT_CHAT_MODEL": "kimi-k2.5",
+
     "OLLAMA_BASE_URL": "http://localhost:11434/v1",
     "OLLAMA_EMBED_MODEL": "bge-m3:latest",
     "SPOTIFY_CLIENT_ID": "",
@@ -139,8 +146,12 @@ ollama pull bge-m3:latest
 
 | 字段 | 说明 |
 |------|------|
-| `SILICONFLOW_API_KEY` | 硅基流动 API Key（必填）|
-| `SILICONFLOW_CHAT_MODEL` | 对话模型，如 `deepseek-ai/DeepSeek-V3` |
+| `DEFAULT_LLM_PROVIDER` | 默认 LLM 提供商：`siliconflow` 或 `moonshot` |
+| `SILICONFLOW_API_KEY` | 硅基流动 API Key（使用 SiliconFlow 时必填）|
+| `SILICONFLOW_CHAT_MODEL` | SiliconFlow 对话模型，如 `deepseek-ai/DeepSeek-V3` |
+| `MOONSHOT_API_KEY` | Moonshot API Key（使用 Kimi 时必填）|
+| `MOONSHOT_BASE_URL` | Moonshot API 地址，默认 `https://api.moonshot.cn/v1` |
+| `MOONSHOT_CHAT_MODEL` | Moonshot 模型，默认 `kimi-k2.5` |
 | `OLLAMA_BASE_URL` | Ollama 服务地址，默认 `http://localhost:11434/v1` |
 | `OLLAMA_EMBED_MODEL` | 本地 Embedding 模型，默认 `bge-m3:latest` |
 | `SPOTIFY_CLIENT_ID/SECRET` | 可选，接入 Spotify 实时乐库 |
