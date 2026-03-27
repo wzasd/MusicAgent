@@ -1,0 +1,14 @@
+[
+  {
+    "title": "My Heart Will Go On",
+    "artist": "Céline Dion",
+    "genre": [],
+    "mood": [],
+    "matched_lyrics": "Every night in my dreams",
+    "similarity_score": 0.95,
+    "match_type": "web_search",
+    "source": "web_search",
+    "search_strategy": "lyrics_precise",
+    "low_confidence": false
+  }
+]

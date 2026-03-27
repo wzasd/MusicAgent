@@ -114,20 +114,40 @@ class EventSetlistSearchEngine:
         location: Optional[str] = None,
         event_name: Optional[str] = None
     ) -> Optional[EventSetlist]:
+        import time
+        start_time = time.time()
+
         try:
+            # 构建查询
             query = self._build_search_query(artist, event_type, year, location, event_name)
             logger.info(f"搜索事件歌单: query='{query}'")
+
+            # Web搜索
+            web_start = time.time()
             search_results = await self._search_web(query)
+            web_time = time.time() - web_start
+            logger.info(f"[性能] Web搜索耗时: {web_time:.2f}秒")
+
             if not search_results:
                 logger.warning(f"Web搜索无结果: {query}")
                 return None
+
+            # LLM提取
+            llm_start = time.time()
             setlist = await self._extract_setlist(search_results, artist, event_type)
+            llm_time = time.time() - llm_start
+            logger.info(f"[性能] LLM提取耗时: {llm_time:.2f}秒")
+
             if setlist:
                 if year:
                     setlist.date = setlist.date or year
                 if location:
                     setlist.location = setlist.location or location
                 logger.info(f"成功提取歌单: {setlist.event_name}, {len(setlist.songs)}首歌")
+
+            total_time = time.time() - start_time
+            logger.info(f"[性能] 事件歌单搜索总耗时: {total_time:.2f}秒 (Web:{web_time:.2f}s, LLM:{llm_time:.2f}s)")
+
             return setlist
         except Exception as e:
             logger.error(f"搜索事件歌单失败: {e}", exc_info=True)

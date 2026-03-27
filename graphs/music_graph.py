@@ -293,6 +293,9 @@ class MusicRecommendationGraph:
         节点1: 分析用户意图
         识别用户想要做什么（搜索、推荐、聊天等）
         """
+        import time
+        start_time = time.time()
+
         node_name = "analyze_intent"
         logger.info(f"--- [步骤 1] 分析用户意图 ---")
         self._status_tracker.node_start(node_name)
@@ -301,8 +304,11 @@ class MusicRecommendationGraph:
 
         try:
             # 调用LLM分析意图
+            llm_start = time.time()
             prompt = MUSIC_INTENT_ANALYZER_PROMPT.format(user_input=user_input)
             response = await get_llm().ainvoke(prompt)
+            llm_time = time.time() - llm_start
+            logger.info(f"[性能] 意图识别LLM耗时: {llm_time:.2f}秒")
 
             # 记录 Token 使用
             _record_token_usage(response)
@@ -312,6 +318,9 @@ class MusicRecommendationGraph:
             intent_data = json.loads(cleaned_json)
 
             logger.info(f"识别到意图类型: {intent_data.get('intent_type')}")
+
+            total_time = time.time() - start_time
+            logger.info(f"[性能] 意图识别总耗时: {total_time:.2f}秒")
 
             self._status_tracker.node_complete(node_name)
 

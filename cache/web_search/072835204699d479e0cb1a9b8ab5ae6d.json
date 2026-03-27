@@ -1,0 +1,14 @@
+[
+  {
+    "title": "Bleeding Love",
+    "artist": "Leona Lewis",
+    "genre": [],
+    "mood": [],
+    "matched_lyrics": "closed off from love",
+    "similarity_score": 0.92,
+    "match_type": "web_search",
+    "source": "web_search",
+    "search_strategy": "lyrics_precise",
+    "low_confidence": false
+  }
+]

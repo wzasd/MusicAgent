@@ -1,0 +1,14 @@
+[
+  {
+    "title": "Cosmic Love",
+    "artist": "Florence + the Machine",
+    "genre": [],
+    "mood": [],
+    "matched_lyrics": "fell from your heart and landed in my eyes",
+    "similarity_score": 0.95,
+    "match_type": "web_search",
+    "source": "web_search",
+    "search_strategy": "lyrics_precise",
+    "low_confidence": false
+  }
+]
