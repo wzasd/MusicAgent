@@ -12,7 +12,7 @@ from langgraph.graph import StateGraph, END
 from langgraph.graph.state import CompiledStateGraph
 
 from config.logging_config import get_logger
-from llms.siliconflow_llm import get_chat_model
+from llms import get_chat_model
 from schemas.music_state import MusicAgentState, AgentStatus, NodeExecutionInfo, TokenUsageInfo
 from tools.music_tools import get_music_search_tool, get_music_recommender
 from tools.event_setlist_search import get_event_setlist_search_engine

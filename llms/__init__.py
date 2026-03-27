@@ -54,6 +54,48 @@ def get_llm(provider: Optional[str] = None) -> "BaseLLM":
         )
 
 
+def get_chat_model(provider: Optional[str] = None):
+    """
+    获取指定提供商的 LangChain 兼容聊天模型
+
+    Args:
+        provider: LLM 提供商名称，可选 "siliconflow" 或 "moonshot"
+                 如果为 None，则使用 DEFAULT_LLM_PROVIDER 配置
+
+    Returns:
+        ChatOpenAI 实例
+
+    Raises:
+        ValueError: 当指定的提供商不支持时
+    """
+    import os
+
+    # 如果没有指定 provider，从配置读取默认值
+    if provider is None:
+        provider = os.getenv("DEFAULT_LLM_PROVIDER")
+        if not provider:
+            try:
+                from config.settings_loader import load_settings_from_json
+                settings = load_settings_from_json()
+                provider = settings.get("DEFAULT_LLM_PROVIDER", "siliconflow")
+            except:
+                provider = "siliconflow"
+
+    provider = provider.lower()
+
+    if provider == "moonshot":
+        from .moonshot_llm import get_chat_model as get_moonshot_chat_model
+        return get_moonshot_chat_model()
+    elif provider == "siliconflow":
+        from .siliconflow_llm import get_chat_model as get_siliconflow_chat_model
+        return get_siliconflow_chat_model()
+    else:
+        raise ValueError(
+            f"不支持的 LLM 提供商: '{provider}'。"
+            f"支持的提供商: siliconflow, moonshot"
+        )
+
+
 # 尝试导入 Moonshot（如果存在）
 try:
     from .moonshot_llm import MoonshotLLM, get_chat_model as get_moonshot_chat_model
@@ -67,6 +109,7 @@ __all__ = [
     "BaseLLM",
     # 工厂函数
     "get_llm",
+    "get_chat_model",
     # SiliconFlow
     "SiliconFlowLLM",
     "get_siliconflow_chat_model",

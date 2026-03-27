@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 from dataclasses import dataclass, asdict
 
 from config.logging_config import get_logger
-from llms.siliconflow_llm import get_chat_model
+from llms import get_chat_model
 from tools.music_tools import Song
 from graphs.music_graph import _clean_search_query
 from api.music_agent_service import get_music_agent_service, MusicAgentResult

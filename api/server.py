@@ -36,7 +36,7 @@ from services import PlaylistRecommendationService
 from services.journey_service import MusicJourneyService, MoodPoint
 from tools.music_tools import get_music_search_tool
 from graphs.music_graph import get_agent_status_tracker, _clean_search_query
-from llms.siliconflow_llm import get_chat_model
+from llms import get_chat_model
 from prompts.music_prompts import MUSIC_INTENT_ANALYZER_PROMPT
 
 # 导入搜索日志函数
