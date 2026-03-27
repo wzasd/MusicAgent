@@ -15,6 +15,7 @@ from config.logging_config import get_logger
 from llms.siliconflow_llm import get_chat_model
 from schemas.music_state import MusicAgentState, AgentStatus, NodeExecutionInfo, TokenUsageInfo
 from tools.music_tools import get_music_search_tool, get_music_recommender
+from tools.event_setlist_search import get_event_setlist_search_engine
 from prompts.music_prompts import (
     MUSIC_INTENT_ANALYZER_PROMPT,
     MUSIC_RECOMMENDATION_EXPLAINER_PROMPT,
@@ -365,6 +366,8 @@ class MusicRecommendationGraph:
             return "search_by_theme"
         elif intent_type == "search_by_topic":
             return "search_by_topic"
+        elif intent_type == "search_event_setlist":
+            return "search_event_setlist"
         elif intent_type.startswith("create_playlist"):
             # 创建歌单意图，先分析用户偏好
             return "analyze_user_preferences"
@@ -589,6 +592,89 @@ class MusicRecommendationGraph:
                 "error_log": state.get("error_log", []) + [
                     {"node": "search_by_topic", "error": str(e)}
                 ]
+            }
+
+    @timed("search_event_setlist")
+    async def search_event_setlist_node(self, state: MusicAgentState) -> Dict[str, Any]:
+        """
+        节点2a-event: 搜索事件歌单
+        """
+        node_name = "search_event_setlist"
+        logger.info(f"--- [步骤 2a-event] 搜索事件歌单 ---")
+        self._status_tracker.node_start(node_name)
+
+        parameters = state.get("intent_parameters", {})
+        artist = parameters.get("artist", "")
+        event_type = parameters.get("event_type", "concert")
+        year = parameters.get("year")
+        location = parameters.get("location")
+        event_name = parameters.get("event_name")
+
+        try:
+            from tools.event_setlist_search import get_event_setlist_search_engine
+            from tools.music_tools import Song
+
+            engine = get_event_setlist_search_engine()
+            setlist = await engine.search(
+                artist=artist,
+                event_type=event_type,
+                year=year,
+                location=location,
+                event_name=event_name
+            )
+
+            if setlist and setlist.songs:
+                # 转换为Song格式
+                search_results = []
+                for song in setlist.songs:
+                    s = Song(
+                        title=song.title,
+                        artist=song.artist or setlist.artist,
+                        genre="",
+                        popularity=80
+                    )
+                    d = s.to_dict()
+                    d["order"] = song.order
+                    d["is_cover"] = song.is_cover
+                    d["note"] = song.note
+                    search_results.append(d)
+
+                logger.info(f"事件歌单搜索成功: {len(search_results)}首")
+                self._status_tracker.node_complete(node_name)
+
+                return {
+                    "search_results": search_results,
+                    "recommendations": search_results[:5],
+                    "step_count": state.get("step_count", 0) + 1,
+                    "agent_status": self._status_tracker.get_status(),
+                    "metadata": {
+                        "event_setlist": setlist.to_dict()
+                    }
+                }
+            else:
+                logger.warning(f"未找到事件歌单: {artist} {event_type}")
+                self._status_tracker.node_complete(node_name)
+
+                return {
+                    "search_results": [],
+                    "recommendations": [],
+                    "step_count": state.get("step_count", 0) + 1,
+                    "agent_status": self._status_tracker.get_status(),
+                    "final_response": f"抱歉，未找到{artist}的{event_type}歌单信息，可能是活动尚未举办或信息暂未公开。"
+                }
+
+        except Exception as e:
+            logger.error(f"事件歌单搜索失败: {e}")
+            self._status_tracker.node_complete(node_name, error=str(e))
+            return {
+                "search_results": [],
+                "recommendations": [],
+                "step_count": state.get("step_count", 0) + 1,
+                "agent_status": self._status_tracker.get_status(),
+                "error_log": state.get("error_log", []) + [
+                    {"node": "search_event_setlist", "error": str(e)}
+                ],
+                "final_response": "搜索歌单时遇到了问题，请稍后重试。"
             }
 
     @timed("generate_recommendations")
@@ -1097,6 +1183,7 @@ class MusicRecommendationGraph:
         workflow.add_node("search_by_lyrics", self.search_by_lyrics_node)  # 歌词搜索
         workflow.add_node("search_by_theme", self.search_by_theme_node)   # 影视主题曲搜索
         workflow.add_node("search_by_topic", self.search_by_topic_node)   # 话题歌曲搜索
+        workflow.add_node("search_event_setlist", self.search_event_setlist_node)  # 事件歌单搜索
         workflow.add_node("generate_recommendations", self.generate_recommendations_node)
         workflow.add_node("analyze_user_preferences", self.analyze_user_preferences_node)  # ⭐ NEW
         workflow.add_node("enhanced_recommendations", self.enhanced_recommendations_node)  # ⭐ NEW
@@ -1116,6 +1203,7 @@ class MusicRecommendationGraph:
                 "search_by_lyrics": "search_by_lyrics",  # 歌词搜索
                 "search_by_theme": "search_by_theme",     # 影视主题曲搜索
                 "search_by_topic": "search_by_topic",     # 话题歌曲搜索
+                "search_event_setlist": "search_event_setlist",  # 新增
                 "generate_recommendations": "generate_recommendations",
                 "analyze_user_preferences": "analyze_user_preferences",  # ⭐ NEW
                 "general_chat": "general_chat"
@@ -1147,6 +1235,7 @@ class MusicRecommendationGraph:
         workflow.add_edge("search_by_lyrics", "generate_explanation")  # 歌词搜索后生成解释
         workflow.add_edge("search_by_theme", "generate_explanation")   # 主题曲搜索后生成解释
         workflow.add_edge("search_by_topic", "generate_explanation")   # 话题搜索后生成解释
+        workflow.add_edge("search_event_setlist", "generate_explanation")  # 事件歌单搜索后生成解释
         workflow.add_edge("generate_recommendations", "generate_explanation")
         
         # 创建播放列表后生成解释
