@@ -69,7 +69,8 @@ class EventSetlistSearchEngine:
     """事件歌单搜索引擎"""
 
     def __init__(self, web_search_provider=None):
-        self.llm = SiliconFlowLLM()
+        from llms import get_llm
+        self.llm = get_llm()
         self.web_search = web_search_provider or self._get_default_provider()
         logger.info("EventSetlistSearchEngine 初始化完成")
 

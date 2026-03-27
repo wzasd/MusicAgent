@@ -266,9 +266,9 @@ class LyricsSearchEngine:
                     logger.info(f"策略 {strategy} 返回 {len(results_list)} 条结果")
 
                     # 用 LLM 从 web 内容中提取结构化信息
-                    from llms.siliconflow_llm import SiliconFlowLLM
+                    from llms import get_llm
                     from prompts.music_prompts import LYRICS_IDENTIFICATION_FROM_SEARCH_PROMPT
-                    llm = SiliconFlowLLM()
+                    llm = get_llm()
 
                     # 使用安全的字符串替换而不是 format()，避免搜索结果中的 {} 被解析为占位符
                     extract_prompt = LYRICS_IDENTIFICATION_FROM_SEARCH_PROMPT

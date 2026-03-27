@@ -225,9 +225,9 @@ class ThemeSearchEngine:
             logger.info(f"合并搜索结果: {len(unique_results)} 条唯一来源")
 
             # 用 LLM 从搜索结果中提取结构化歌曲列表
-            from llms.siliconflow_llm import SiliconFlowLLM
+            from llms import get_llm
             from prompts.music_prompts import THEME_SONG_EXTRACTION_PROMPT
-            llm = SiliconFlowLLM()
+            llm = get_llm()
 
             extract_prompt = THEME_SONG_EXTRACTION_PROMPT.format(
                 title=title,

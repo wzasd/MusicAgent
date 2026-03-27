@@ -752,9 +752,9 @@ class MusicSearchTool:
             logger.info(f"Web Search 返回关于 {artist} 的内容")
 
             # 使用 LLM 提取歌曲列表
-            from llms.siliconflow_llm import SiliconFlowLLM
+            from llms import get_llm
             from prompts.music_prompts import ARTIST_SONGS_EXTRACTION_PROMPT
-            llm = SiliconFlowLLM()
+            llm = get_llm()
             extract_prompt = ARTIST_SONGS_EXTRACTION_PROMPT.format(
                 artist=artist,
                 search_results=combined,

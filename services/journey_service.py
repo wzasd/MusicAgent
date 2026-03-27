@@ -14,7 +14,7 @@ from config.logging_config import get_logger
 import re
 
 try:
-    from llms.siliconflow_llm import SiliconFlowLLM
+    from llms import get_llm
 except Exception as llm_import_error:  # noqa: BLE001
     SiliconFlowLLM = None  # type: ignore[assignment]
     llm_fallback_warning = str(llm_import_error)
@@ -172,7 +172,7 @@ class MusicJourneyService:
         if llm is not None:
             self.llm = llm
         elif SiliconFlowLLM is not None:
-            self.llm = SiliconFlowLLM()
+            self.llm = get_llm()
         else:
             self.llm = BasicJourneyLLM()
             if llm_fallback_warning:

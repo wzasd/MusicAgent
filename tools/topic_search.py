@@ -248,9 +248,9 @@ class TopicSearchEngine:
                 constraint_parts.append(f"风格应为 {genre}")
             constraint = f" ({', '.join(constraint_parts)})" if constraint_parts else ""
 
-            from llms.siliconflow_llm import SiliconFlowLLM
+            from llms import get_llm
             from prompts.music_prompts import TOPIC_SONG_EXTRACTION_PROMPT
-            llm = SiliconFlowLLM()
+            llm = get_llm()
             extract_prompt = TOPIC_SONG_EXTRACTION_PROMPT.format(
                 topic=topic,
                 constraint=constraint,
