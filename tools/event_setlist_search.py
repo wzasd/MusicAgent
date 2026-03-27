@@ -135,12 +135,13 @@ class EventSetlistSearchEngine:
 
     async def _search_web(self, query: str) -> str:
         try:
-            results = await self.web_search.search(query, max_results=5)
+            response = await self.web_search.search(query, max_results=5)
+            results = response.get("results", [])
             snippets = []
             for i, result in enumerate(results, 1):
-                title = result.get("title", "")
-                content = result.get("content", "")
-                url = result.get("url", "")
+                title = result.title
+                content = result.content
+                url = result.url
                 snippets.append(f"[{i}] {title}\n{content}\nSource: {url}\n")
             return "\n".join(snippets)
         except Exception as e:
