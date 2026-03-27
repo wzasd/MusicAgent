@@ -17,7 +17,7 @@ def get_llm(provider: Optional[str] = None) -> "BaseLLM":
     获取指定提供商的 LLM 实例
 
     Args:
-        provider: LLM 提供商名称，可选 "siliconflow" 或 "moonshot"
+        provider: LLM 提供商名称，可选 "siliconflow"、"moonshot" 或 "bailian"
                  如果为 None，则使用 DEFAULT_LLM_PROVIDER 配置
 
     Returns:
@@ -44,13 +44,16 @@ def get_llm(provider: Optional[str] = None) -> "BaseLLM":
     if provider == "moonshot":
         from .moonshot_llm import MoonshotLLM
         return MoonshotLLM()
+    elif provider == "bailian":
+        from .bailian_llm import BailianLLM
+        return BailianLLM()
     elif provider == "siliconflow":
         from .siliconflow_llm import SiliconFlowLLM
         return SiliconFlowLLM()
     else:
         raise ValueError(
             f"不支持的 LLM 提供商: '{provider}'。"
-            f"支持的提供商: siliconflow, moonshot"
+            f"支持的提供商: siliconflow, moonshot, bailian"
         )
 
 
@@ -59,7 +62,7 @@ def get_chat_model(provider: Optional[str] = None):
     获取指定提供商的 LangChain 兼容聊天模型
 
     Args:
-        provider: LLM 提供商名称，可选 "siliconflow" 或 "moonshot"
+        provider: LLM 提供商名称，可选 "siliconflow"、"moonshot" 或 "bailian"
                  如果为 None，则使用 DEFAULT_LLM_PROVIDER 配置
 
     Returns:
@@ -86,13 +89,16 @@ def get_chat_model(provider: Optional[str] = None):
     if provider == "moonshot":
         from .moonshot_llm import get_chat_model as get_moonshot_chat_model
         return get_moonshot_chat_model()
+    elif provider == "bailian":
+        from .bailian_llm import get_chat_model as get_bailian_chat_model
+        return get_bailian_chat_model()
     elif provider == "siliconflow":
         from .siliconflow_llm import get_chat_model as get_siliconflow_chat_model
         return get_siliconflow_chat_model()
     else:
         raise ValueError(
             f"不支持的 LLM 提供商: '{provider}'。"
-            f"支持的提供商: siliconflow, moonshot"
+            f"支持的提供商: siliconflow, moonshot, bailian"
         )
 
 
@@ -102,6 +108,13 @@ try:
 except ImportError:
     MoonshotLLM = None  # type: ignore
     get_moonshot_chat_model = None  # type: ignore
+
+# 尝试导入 Bailian（如果存在）
+try:
+    from .bailian_llm import BailianLLM, get_chat_model as get_bailian_chat_model
+except ImportError:
+    BailianLLM = None  # type: ignore
+    get_bailian_chat_model = None  # type: ignore
 
 
 __all__ = [
@@ -116,4 +129,7 @@ __all__ = [
     # Moonshot（条件导出）
     "MoonshotLLM",
     "get_moonshot_chat_model",
+    # Bailian（条件导出）
+    "BailianLLM",
+    "get_bailian_chat_model",
 ]
