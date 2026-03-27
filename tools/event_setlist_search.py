@@ -74,8 +74,8 @@ class EventSetlistSearchEngine:
         logger.info("EventSetlistSearchEngine 初始化完成")
 
     def _get_default_provider(self):
-        from tools.web_search.factory import get_web_search_provider
-        return get_web_search_provider()
+        from tools.web_search.factory import get_web_search
+        return get_web_search()
 
     def _build_search_query(
         self,
