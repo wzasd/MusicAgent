@@ -7,6 +7,7 @@ import os
 from typing import Optional, Dict, Any
 from openai import OpenAI
 from langchain_openai import ChatOpenAI
+import httpx
 from .base import BaseLLM
 
 
@@ -46,13 +47,23 @@ class SiliconFlowLLM(BaseLLM):
             except:
                 pass
         
+        # 配置超时参数（语音后台优化：更短的超时）
+        timeout = httpx.Timeout(
+            connect=5.0,      # 连接超时 5秒
+            read=30.0,        # 读取超时 30秒
+            write=10.0,       # 写入超时 10秒
+            pool=5.0          # 连接池超时 5秒
+        )
+
         # 初始化OpenAI客户端，使用硅基流动的endpoint
         self.client = OpenAI(
             api_key=self.api_key,
-            base_url=base_url
+            base_url=base_url,
+            timeout=timeout  # 添加超时控制
         )
-        
+
         self.default_model = model_name or self.get_default_model()
+        self.timeout = timeout
     
     def get_default_model(self) -> str:
         """获取默认模型名称"""
@@ -94,7 +105,8 @@ class SiliconFlowLLM(BaseLLM):
                 "messages": messages,
                 "temperature": kwargs.get("temperature", 0.7),
                 "max_tokens": kwargs.get("max_tokens", 4000),
-                "stream": False
+                "stream": False,
+                "timeout": kwargs.get("timeout", 30)  # 支持单次调用超时覆盖
             }
 
             # 调用API
