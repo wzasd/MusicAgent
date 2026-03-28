@@ -16,7 +16,7 @@ export default function SongCard({ title, artist, genre, mood, reason }: SongCar
       style={{
         padding: '1.25rem',
         marginBottom: '1rem',
-        backgroundColor: "#fff",
+        backgroundColor: theme.colors.background.card,
         borderRadius: theme.borderRadius.md,
         border: `1px solid ${theme.colors.border.default}`,
         boxShadow: theme.shadows.sm,

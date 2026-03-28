@@ -16,7 +16,6 @@ interface LogEntry {
   parameters: Record<string, string>;
   result_count: number;
   elapsed_ms: number;
-  intent_latency_ms?: number;
   status: string;
   source?: string;
   songs?: SongBrief[];
@@ -166,7 +165,7 @@ export default function LogsPage() {
               onClick={fetchLogs}
               style={{
                 padding: '0.5rem 1rem',
-                backgroundColor: theme.colors.primary[600],
+                backgroundColor: theme.colors.primary.main,
                 color: '#fff',
                 border: 'none',
                 borderRadius: theme.borderRadius.md,
@@ -289,7 +288,7 @@ export default function LogsPage() {
                     </div>
                     <div>
                       <span style={{ color: theme.colors.text.muted }}>搜索内容: </span>
-                      <span style={{ fontWeight: 500, color: theme.colors.primary[600] }}>
+                      <span style={{ fontWeight: 500, color: theme.colors.primary.main }}>
                         {getSearchContent(log)}
                       </span>
                     </div>
@@ -301,12 +300,6 @@ export default function LogsPage() {
                       <span style={{ color: theme.colors.text.muted }}>耗时: </span>
                       <span style={{ fontWeight: 500 }}>{log.elapsed_ms}ms</span>
                     </div>
-                    {log.intent_latency_ms && (
-                      <div>
-                        <span style={{ color: theme.colors.text.muted }}>意图识别: </span>
-                        <span style={{ fontWeight: 500, color: '#7c3aed' }}>{log.intent_latency_ms}ms</span>
-                      </div>
-                    )}
                   </div>
 
                   {log.parameters && Object.keys(log.parameters).length > 0 && (

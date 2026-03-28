@@ -186,7 +186,7 @@ const formatTimestamp = (date: Date) => {
 const Card = ({ children, title, style }: { children: React.ReactNode; title?: string; style?: React.CSSProperties }) => (
   <div
     style={{
-      backgroundColor: '#fff',
+      backgroundColor: theme.colors.background.card,
       borderRadius: theme.borderRadius.lg,
       border: '1px solid rgba(31, 35, 40, 0.08)',
       overflow: 'hidden',

@@ -89,7 +89,7 @@ export default function JourneySegments({ segments, activeSegmentId }: JourneySe
           style={{
             borderRadius: theme.borderRadius.lg,
             border: `1px solid ${theme.colors.border.default}`,
-            backgroundColor: "#fff",
+            backgroundColor: theme.colors.background.card,
             boxShadow:
               segment.segment_id === activeSegmentId
                 ? '0 12px 25px rgba(59, 130, 246, 0.15)'
@@ -199,7 +199,7 @@ export default function JourneySegments({ segments, activeSegmentId }: JourneySe
                       padding: '0.85rem',
                       borderRadius: theme.borderRadius.md,
                       border: `1px solid ${theme.colors.border.default}`,
-                      backgroundColor: theme.colors.light.primary,
+                      backgroundColor: theme.colors.background.main,
                     }}
                   >
                     <p

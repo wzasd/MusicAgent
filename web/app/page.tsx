@@ -2,6 +2,7 @@
 
 import { useRouter } from 'next/navigation';
 import ProductIntro from '@/components/Landing/ProductIntro';
+import { theme } from '@/styles/theme';
 
 export default function Home() {
   const router = useRouter();
@@ -11,13 +12,28 @@ export default function Home() {
   };
 
   return (
-    <main className="min-h-[100dvh] bg-light-primary flex flex-col">
-      <ProductIntro
-        onPrimaryAction={() => router.push('/recommendations')}
-        onSecondaryAction={() => router.push('/search')}
-        onQuickExampleSelect={navigateWithPrompt}
-      />
-    </main>
+    <div
+      style={{
+        minHeight: '100vh',
+        backgroundColor: theme.colors.background.main,
+        display: 'flex',
+        justifyContent: 'center',
+        padding: '3rem 1.5rem 4rem',
+      }}
+    >
+      <main
+        style={{
+          width: '100%',
+          maxWidth: `${theme.layout.maxWidth}px`,
+        }}
+      >
+        <ProductIntro
+          onPrimaryAction={() => router.push('/recommendations')}
+          onSecondaryAction={() => router.push('/search')}
+          onQuickExampleSelect={navigateWithPrompt}
+        />
+      </main>
+    </div>
   );
 }
 
