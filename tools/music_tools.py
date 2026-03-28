@@ -386,7 +386,8 @@ class MusicSearchTool:
         genre: Optional[str] = None,
         limit: int = 10,
         use_rag_first: bool = True,
-        is_lyrics: bool = False
+        is_lyrics: bool = False,
+        parallel: bool = True
     ) -> Dict[str, Any]:
         """
         搜索歌曲，返回详细步骤信息（用于日志记录）。
@@ -396,6 +397,8 @@ class MusicSearchTool:
             genre: 音乐流派过滤
             limit: 返回结果数量
             use_rag_first: 是否优先使用 RAG（默认 True，时延 < 100ms）
+            is_lyrics: 是否为歌词搜索
+            parallel: 是否启用并行搜索（默认 True，RAG/Spotify/TailyAPI 并行执行）
 
         Returns:
             {"songs": List[Song], "steps": List[Dict], "total_elapsed_ms": float}
@@ -413,7 +416,7 @@ class MusicSearchTool:
             }
             steps.append(step)
 
-        logger.info(f"搜索音乐: query='{query}', genre='{genre}', limit={limit}, use_rag_first={use_rag_first}")
+        logger.info(f"搜索音乐: query='{query}', genre='{genre}', limit={limit}, use_rag_first={use_rag_first}, parallel={parallel}")
 
         final_songs = []
         final_source = "none"
@@ -460,6 +463,17 @@ class MusicSearchTool:
             elapsed = (time.time() - step0_start) * 1000
             add_step("歌词搜索", "error", {"error": str(e), "elapsed_ms": round(elapsed, 2)})
             logger.warning(f"【歌词维度】搜索失败: {e}")
+
+        # ========== 并行搜索模式 ==========
+        if parallel and use_rag_first:
+            return await self._search_parallel_layers(
+                query=query,
+                genre=genre,
+                limit=limit,
+                steps=steps,
+                total_start=total_start,
+                add_step=add_step
+            )
 
         # ========== 第 1 层: RAG 向量搜索（ChromaDB + bge-m3） ==========
         if use_rag_first:
@@ -567,6 +581,316 @@ class MusicSearchTool:
 
         logger.warning("❌ 未找到任何匹配的歌曲")
         return {"songs": [], "steps": steps, "total_elapsed_ms": round((time.time() - total_start) * 1000, 2), "source": "none"}
+
+    async def _search_parallel_layers(
+        self,
+        query: str,
+        genre: Optional[str],
+        limit: int,
+        steps: List[Dict],
+        total_start: float,
+        add_step
+    ) -> Dict[str, Any]:
+        """
+        并行搜索 RAG + Spotify + TailyAPI（第 1/2/3 层）
+
+        策略:
+        1. 三个数据源并行执行
+        2. 早返回机制：RAG 成功且相似度足够高时立即返回
+        3. 优先级：RAG > Spotify > TailyAPI
+        4. 错误隔离：单个源失败不影响其他源
+
+        Args:
+            query: 搜索关键词
+            genre: 音乐流派过滤
+            limit: 返回结果数量
+            steps: 步骤记录列表
+            total_start: 总开始时间
+            add_step: 添加步骤的回调函数
+
+        Returns:
+            {"songs": List[Song], "steps": List[Dict], "total_elapsed_ms": float, "source": str}
+        """
+        import time
+        layer_start = time.time()
+
+        # ========== 定义并行搜索任务 ==========
+        async def search_rag():
+            """RAG 向量搜索"""
+            task_start = time.time()
+            try:
+                from tools.rag_music_search_v2 import get_rag_music_search_v2
+                rag_search = get_rag_music_search_v2()
+
+                if rag_search.vector_store.count() == 0:
+                    raise ValueError("ChromaDB 为空")
+
+                search_query = f"{query} {genre}" if genre else query
+                rag_results = await rag_search.search(search_query, top_k=limit)
+
+                if rag_results:
+                    max_similarity = max(r.get("similarity_score", 0) for r in rag_results)
+                    similarity_threshold = 0.55
+
+                    if max_similarity >= similarity_threshold:
+                        rag_songs = []
+                        for result in rag_results:
+                            song_genre = result.get("genre")
+                            if isinstance(song_genre, list) and song_genre:
+                                song_genre = song_genre[0]
+                            elif not isinstance(song_genre, str):
+                                song_genre = None
+
+                            song = Song(
+                                title=result.get("title", "Unknown"),
+                                artist=result.get("artist", "Unknown Artist"),
+                                album=result.get("album"),
+                                genre=song_genre,
+                                year=result.get("year"),
+                                duration=result.get("duration"),
+                                popularity=int(result.get("similarity_score", 0.5) * 100)
+                            )
+                            rag_songs.append(song)
+
+                        elapsed = (time.time() - task_start) * 1000
+                        logger.info(f"✅ [并行-RAG] 搜索成功: {len(rag_songs)} 首, 最高相似度={max_similarity:.2f}, 耗时={elapsed:.0f}ms")
+                        return ("rag", rag_songs, max_similarity, elapsed)
+                    else:
+                        elapsed = (time.time() - task_start) * 1000
+                        logger.info(f"⚠️ [并行-RAG] 相似度不足 ({max_similarity:.2f} < {similarity_threshold}), 耗时={elapsed:.0f}ms")
+                        return ("rag_low_similarity", [], max_similarity, elapsed)
+                else:
+                    elapsed = (time.time() - task_start) * 1000
+                    logger.info(f"[并行-RAG] 无结果, 耗时={elapsed:.0f}ms")
+                    return ("rag_no_results", [], 0, elapsed)
+
+            except Exception as e:
+                elapsed = (time.time() - task_start) * 1000
+                logger.warning(f"[并行-RAG] 搜索失败: {e}, 耗时={elapsed:.0f}ms")
+                return ("rag_error", [], 0, elapsed)
+
+        async def search_spotify():
+            """Spotify via MCP 搜索"""
+            task_start = time.time()
+            try:
+                if self.mcp_adapter is not None:
+                    spotify_results = await self.mcp_adapter.search_tracks(query, limit=limit * 2)
+                    if spotify_results:
+                        elapsed = (time.time() - task_start) * 1000
+                        logger.info(f"✅ [并行-Spotify] 搜索成功: {len(spotify_results)} 首, 耗时={elapsed:.0f}ms")
+                        return ("spotify", spotify_results, len(spotify_results), elapsed)
+                    else:
+                        elapsed = (time.time() - task_start) * 1000
+                        logger.info(f"[并行-Spotify] 无结果, 耗时={elapsed:.0f}ms")
+                        return ("spotify_no_results", [], 0, elapsed)
+                else:
+                    return ("spotify_no_adapter", [], 0, 0)
+            except Exception as e:
+                elapsed = (time.time() - task_start) * 1000
+                logger.warning(f"[并行-Spotify] 搜索失败: {e}, 耗时={elapsed:.0f}ms")
+                return ("spotify_error", [], 0, elapsed)
+
+        async def search_tailyapi():
+            """TailyAPI 在线搜索"""
+            task_start = time.time()
+            try:
+                taily_results = await self._search_songs_with_tailyapi(query=query, limit=limit)
+                if taily_results:
+                    elapsed = (time.time() - task_start) * 1000
+                    logger.info(f"✅ [并行-TailyAPI] 搜索成功: {len(taily_results)} 首, 耗时={elapsed:.0f}ms")
+                    return ("tailyapi", taily_results, len(taily_results), elapsed)
+                else:
+                    elapsed = (time.time() - task_start) * 1000
+                    logger.info(f"[并行-TailyAPI] 无结果, 耗时={elapsed:.0f}ms")
+                    return ("tailyapi_no_results", [], 0, elapsed)
+            except Exception as e:
+                elapsed = (time.time() - task_start) * 1000
+                logger.warning(f"[并行-TailyAPI] 搜索失败: {e}, 耗时={elapsed:.0f}ms")
+                return ("tailyapi_error", [], 0, elapsed)
+
+        # ========== 并行执行所有搜索任务 ==========
+        logger.info(f"🚀 开始并行搜索 RAG + Spotify + TailyAPI: query='{query}'")
+
+        # 创建任务
+        rag_task = asyncio.create_task(search_rag())
+        spotify_task = asyncio.create_task(search_spotify())
+        taily_task = asyncio.create_task(search_tailyapi())
+
+        # 优先级早返回机制：检查是否有高优先级源成功
+        processed_results = {}
+        total_elapsed = 0
+
+        # 第一轮：等待第一个任务完成，检查是否为 RAG 高相似度
+        done, pending = await asyncio.wait(
+            [rag_task, spotify_task, taily_task],
+            return_when=asyncio.FIRST_COMPLETED
+        )
+
+        # 处理已完成的任务
+        for task in done:
+            try:
+                result = task.result()
+                if isinstance(result, tuple):
+                    source_key, songs, metric, elapsed = result
+                    processed_results[source_key] = {
+                        "songs": songs,
+                        "metric": metric,
+                        "elapsed": elapsed
+                    }
+
+                    # 如果是 RAG 高相似度，立即返回（最高优先级）
+                    if source_key == "rag" and songs:
+                        total_elapsed = (time.time() - layer_start) * 1000
+                        logger.info(f"⚡ [早返回] RAG 搜索成功，立即返回，总耗时={total_elapsed:.0f}ms")
+
+                        # 取消其他任务
+                        for p_task in pending:
+                            p_task.cancel()
+
+                        add_step("并行搜索-RAG", "success", {
+                            "count": len(songs),
+                            "max_similarity": metric,
+                            "elapsed_ms": round(elapsed, 2)
+                        })
+                        return {
+                            "songs": songs[:limit],
+                            "steps": steps,
+                            "total_elapsed_ms": round((time.time() - total_start) * 1000, 2),
+                            "source": "rag_chroma"
+                        }
+            except Exception as e:
+                logger.error(f"任务异常: {e}")
+
+        # 第二轮：继续等待，如果有 Spotify 成功，立即返回
+        if pending and "spotify" not in processed_results:
+            done2, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+            done.update(done2)
+
+            for task in done2:
+                try:
+                    result = task.result()
+                    if isinstance(result, tuple):
+                        source_key, songs, metric, elapsed = result
+                        processed_results[source_key] = {
+                            "songs": songs,
+                            "metric": metric,
+                            "elapsed": elapsed
+                        }
+
+                        # 如果是 Spotify 成功，立即返回（第二优先级）
+                        if source_key == "spotify" and songs:
+                            total_elapsed = (time.time() - layer_start) * 1000
+                            logger.info(f"⚡ [早返回] Spotify 搜索成功，立即返回，总耗时={total_elapsed:.0f}ms")
+
+                            # 取消其他任务
+                            for p_task in pending:
+                                p_task.cancel()
+
+                            add_step("并行搜索-Spotify", "success", {
+                                "count": len(songs),
+                                "elapsed_ms": round(elapsed, 2)
+                            })
+                            return {
+                                "songs": songs[:limit],
+                                "steps": steps,
+                                "total_elapsed_ms": round((time.time() - total_start) * 1000, 2),
+                                "source": "spotify"
+                            }
+                except Exception as e:
+                    logger.error(f"任务异常: {e}")
+
+        # 第三轮：等待所有剩余任务完成
+        if pending:
+            logger.info("等待所有剩余搜索任务完成...")
+            done3, _ = await asyncio.wait(pending)
+            done.update(done3)
+
+            for task in done3:
+                try:
+                    result = task.result()
+                    if isinstance(result, tuple):
+                        source_key, songs, metric, elapsed = result
+                        processed_results[source_key] = {
+                            "songs": songs,
+                            "metric": metric,
+                            "elapsed": elapsed
+                        }
+                except Exception as e:
+                    logger.error(f"任务异常: {e}")
+
+        total_elapsed = (time.time() - layer_start) * 1000
+        logger.info(f"⚡ 并行搜索完成，总耗时={total_elapsed:.0f}ms")
+
+        # ========== 按优先级选择结果 ==========
+
+        # 优先级 1: RAG 高相似度
+        if "rag" in processed_results and processed_results["rag"]["songs"]:
+            result_data = processed_results["rag"]
+            add_step("并行搜索-RAG", "success", {
+                "count": len(result_data["songs"]),
+                "max_similarity": result_data["metric"],
+                "elapsed_ms": round(result_data["elapsed"], 2)
+            })
+            return {
+                "songs": result_data["songs"][:limit],
+                "steps": steps,
+                "total_elapsed_ms": round((time.time() - total_start) * 1000, 2),
+                "source": "rag_chroma"
+            }
+
+        # 优先级 2: Spotify
+        if "spotify" in processed_results and processed_results["spotify"]["songs"]:
+            result_data = processed_results["spotify"]
+            add_step("并行搜索-Spotify", "success", {
+                "count": len(result_data["songs"]),
+                "elapsed_ms": round(result_data["elapsed"], 2)
+            })
+            return {
+                "songs": result_data["songs"][:limit],
+                "steps": steps,
+                "total_elapsed_ms": round((time.time() - total_start) * 1000, 2),
+                "source": "spotify"
+            }
+
+        # 优先级 3: TailyAPI
+        if "tailyapi" in processed_results and processed_results["tailyapi"]["songs"]:
+            result_data = processed_results["tailyapi"]
+            add_step("并行搜索-TailyAPI", "success", {
+                "count": len(result_data["songs"]),
+                "elapsed_ms": round(result_data["elapsed"], 2)
+            })
+            return {
+                "songs": result_data["songs"][:limit],
+                "steps": steps,
+                "total_elapsed_ms": round((time.time() - total_start) * 1000, 2),
+                "source": "tailyapi"
+            }
+
+        # ========== 第 4 层: 本地 JSON 模糊匹配 (保底) ==========
+        logger.info("并行搜索无结果，尝试从本地音乐数据库模糊匹配")
+        try:
+            q = query.lower()
+            local_matches = [
+                song
+                for song in self.music_db
+                if q in song.title.lower() or q in song.artist.lower()
+            ]
+            if genre:
+                local_matches = [
+                    s for s in local_matches
+                    if s.genre and genre.lower() in s.genre.lower()
+                ]
+            if local_matches:
+                logger.info(f"✅ 本地数据库匹配成功: {len(local_matches)} 首歌曲")
+                add_step("本地数据库匹配", "success", {"count": len(local_matches)})
+                return {"songs": local_matches[:limit], "steps": steps, "total_elapsed_ms": round((time.time() - total_start) * 1000, 2), "source": "local_db"}
+        except Exception as e:
+            logger.error(f"从本地数据库搜索失败: {e}", exc_info=True)
+            add_step("本地数据库匹配", "error", {"error": str(e)})
+
+        logger.warning("❌ 未找到任何匹配的歌曲")
+        return {"songs": [], "steps": steps, "total_elapsed_ms": round((time.time() - total_start) * 1000, 2), "source": "none"}
+
     
     async def get_songs_by_genre(self, genre: str, limit: int = 10) -> List[Song]:
         """
@@ -751,7 +1075,7 @@ class MusicSearchTool:
 
             logger.info(f"Web Search 返回关于 {artist} 的内容")
 
-            # 使用 LLM 提取歌曲列表
+            # 使用 LLM 提取歌曲列表（带缓存）
             from llms import get_llm
             from prompts.music_prompts import ARTIST_SONGS_EXTRACTION_PROMPT
             llm = get_llm()
@@ -760,9 +1084,12 @@ class MusicSearchTool:
                 search_results=combined,
                 limit=limit
             )
-            response = llm.invoke_text(
+            # 使用低温度（0.2）和缓存以提高重复查询性能
+            response = await llm.invoke_text_cached(
                 f"你是专业的音乐信息提取助手，擅长从搜索结果中提取歌手的热门歌曲。只使用给定的搜索结果，不要凭记忆猜测。",
                 extract_prompt,
+                temperature=0.2,
+                max_tokens=2000
             )
 
             # 解析 JSON

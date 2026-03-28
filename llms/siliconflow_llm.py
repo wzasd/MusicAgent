@@ -142,6 +142,77 @@ class SiliconFlowLLM(BaseLLM):
         result = self.invoke(system_prompt, user_prompt, **kwargs)
         return result.get('content', '')
 
+    async def invoke_cached(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        **kwargs
+    ) -> Dict[str, Any]:
+        """
+        带缓存的 LLM 调用（异步版本）
+
+        根据温度自动判断是否缓存：
+        - temperature ≤ 0.3: 长期缓存（7天）
+        - 0.3 < temperature ≤ 0.5: 短期缓存（1小时）
+        - temperature > 0.5: 不缓存
+
+        Args:
+            system_prompt: 系统提示词
+            user_prompt: 用户提示词
+            **kwargs: 其他参数（temperature, max_tokens 等）
+
+        Returns:
+            包含回复文本和token使用量的字典
+        """
+        from llms.llm_cache import get_llm_cache
+        import asyncio
+
+        cache = get_llm_cache()
+        temperature = kwargs.get("temperature", 0.7)
+        max_tokens = kwargs.get("max_tokens", 4000)
+
+        # 检查缓存
+        cached = await cache.get(
+            system_prompt, user_prompt, self.default_model,
+            temperature, max_tokens, **kwargs
+        )
+
+        if cached:
+            logger.info(f"LLM缓存命中，跳过API调用")
+            return cached
+
+        # 缓存未命中，调用 API
+        logger.info(f"LLM缓存未命中，调用API (温度={temperature})")
+        result = self.invoke(system_prompt, user_prompt, **kwargs)
+
+        # 缓存结果
+        await cache.set(
+            system_prompt, user_prompt, self.default_model,
+            temperature, max_tokens, result, **kwargs
+        )
+
+        return result
+
+    async def invoke_text_cached(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        **kwargs
+    ) -> str:
+        """
+        带缓存的 LLM 调用（只返回文本内容）
+
+        Args:
+            system_prompt: 系统提示词
+            user_prompt: 用户提示词
+            **kwargs: 其他参数
+
+        Returns:
+            生成的文本内容
+        """
+        result = await self.invoke_cached(system_prompt, user_prompt, **kwargs)
+        return result.get('content', '')
+
     async def ainvoke(self, prompt: str, **kwargs) -> str:
         """
         异步调用LLM（兼容LangChain接口）

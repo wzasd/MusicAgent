@@ -176,9 +176,12 @@ class EventSetlistSearchEngine:
             prompt = SETLIST_EXTRACTION_PROMPT.format(
                 artist=artist, event_type=event_type, search_results=search_results
             )
-            response = self.llm.invoke_text(
+            # 使用低温度（0.3）和缓存以提高重复查询性能
+            response = await self.llm.invoke_text_cached(
                 "你是专业的现场音乐资料整理专家，擅长提取演唱会歌单信息。只从给定的搜索结果中提取，不要凭记忆补充。",
-                prompt, temperature=0.3, max_tokens=2000
+                prompt,
+                temperature=0.3,
+                max_tokens=2000
             )
             json_match = re.search(r'\{.*\}', response, re.DOTALL)
             if not json_match:
