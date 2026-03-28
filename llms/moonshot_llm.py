@@ -7,6 +7,7 @@ import os
 from typing import Optional, Dict, Any
 from openai import OpenAI
 from langchain_openai import ChatOpenAI
+import httpx
 from .base import BaseLLM
 
 
@@ -46,13 +47,23 @@ class MoonshotLLM(BaseLLM):
             except:
                 pass
 
+        # 配置超时参数
+        timeout = httpx.Timeout(
+            connect=5.0,
+            read=30.0,
+            write=10.0,
+            pool=5.0
+        )
+
         # 初始化OpenAI客户端，使用Moonshot的endpoint
         self.client = OpenAI(
             api_key=self.api_key,
-            base_url=base_url
+            base_url=base_url,
+            timeout=timeout
         )
 
         self.default_model = model_name or self.get_default_model()
+        self.timeout = timeout
 
     def get_default_model(self) -> str:
         """获取默认模型名称"""

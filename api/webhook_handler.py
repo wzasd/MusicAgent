@@ -1103,11 +1103,22 @@ Please answer in a friendly manner."""
 
 # ========== 会话管理 ==========
 
-class SessionManager:
-    """会话管理器"""
+from cachetools import TTLCache
 
-    def __init__(self):
-        self._sessions: Dict[str, ConversationContext] = {}
+class SessionManager:
+    """会话管理器（带 TTL 自动过期）"""
+
+    def __init__(self, maxsize: int = 1000, ttl: int = 1800):
+        """
+        初始化会话管理器
+
+        Args:
+            maxsize: 最大会话数，默认 1000
+            ttl: 会话过期时间（秒），默认 30 分钟
+        """
+        self._sessions: TTLCache = TTLCache(maxsize=maxsize, ttl=ttl)
+        self._maxsize = maxsize
+        self._ttl = ttl
 
     def get_or_create_context(self, session_id: str, messages: List[Dict[str, str]]) -> ConversationContext:
         """获取或创建会话上下文"""
@@ -1134,6 +1145,10 @@ class SessionManager:
         """清除会话"""
         if session_id in self._sessions:
             del self._sessions[session_id]
+
+    def get_active_count(self) -> int:
+        """获取当前活跃会话数"""
+        return len(self._sessions)
 
 
 # 全局会话管理器

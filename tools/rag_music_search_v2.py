@@ -220,6 +220,10 @@ class RAGMusicSearchV2:
     def __init__(self, use_chroma: bool = True):
         self.use_chroma = use_chroma
 
+        # 初始化 Embedding 缓存
+        from utils.cache import SimpleCache
+        self._embedding_cache = SimpleCache(max_size=10000, ttl=3600)
+
         if use_chroma:
             self.vector_store = ChromaVectorStore()
         else:
@@ -248,12 +252,26 @@ class RAGMusicSearchV2:
         self._user_history: Optional[UserHistoryService] = None
 
     async def _create_embedding(self, text: str) -> List[float]:
-        """使用本地 Ollama bge-m3 创建文本嵌入"""
+        """使用本地 Ollama bge-m3 创建文本嵌入（带缓存）"""
+        # 检查缓存
+        cache_key = self._embedding_cache._hash_key(text)
+        cached = await self._embedding_cache.get(cache_key)
+        if cached:
+            logger.debug(f"Embedding cache hit: {text[:32]}...")
+            return cached
+
+        # 未命中， 调用 API
         try:
             from openai import AsyncOpenAI
             client = AsyncOpenAI(api_key=self._embed_api_key, base_url=self._embed_base_url)
             resp = await client.embeddings.create(model=self._embed_model, input=text)
-            return resp.data[0].embedding
+            embedding = resp.data[0].embedding
+
+            # 缓存结果
+            await self._embedding_cache.set(cache_key, embedding)
+            logger.debug(f"Embedding cached: {text[:32]}...")
+
+            return embedding
         except Exception as e:
             logger.error(f"生成嵌入失败: {e}")
             return []

@@ -108,7 +108,7 @@ class TavilyProvider(WebSearchProvider):
                     self.API_URL,
                     json=payload,
                     headers={"Content-Type": "application/json"},
-                    timeout=aiohttp.ClientTimeout(total=30),
+                    timeout=aiohttp.ClientTimeout(total=10),  # 优化：语音后台使用 10 秒超时
                 ) as resp:
                     if resp.status != 200:
                         error_text = await resp.text()
