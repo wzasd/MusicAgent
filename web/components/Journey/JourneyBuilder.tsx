@@ -109,7 +109,7 @@ export default function JourneyBuilder({ loading, onGenerate }: JourneyBuilderPr
   return (
     <section
       style={{
-        backgroundColor: theme.colors.background.card,
+        backgroundColor: "#fff",
         borderRadius: theme.borderRadius.lg,
         border: `1px solid ${theme.colors.border.default}`,
         padding: '1.75rem',
@@ -143,7 +143,7 @@ export default function JourneyBuilder({ loading, onGenerate }: JourneyBuilderPr
           style={{
             display: 'flex',
             gap: '0.5rem',
-            backgroundColor: theme.colors.background.main,
+            backgroundColor: theme.colors.light.primary,
             padding: '0.25rem',
             borderRadius: theme.borderRadius.md,
           }}
@@ -199,7 +199,7 @@ export default function JourneyBuilder({ loading, onGenerate }: JourneyBuilderPr
               fontSize: '1rem',
               lineHeight: 1.6,
               color: theme.colors.text.primary,
-              backgroundColor: theme.colors.background.main,
+              backgroundColor: theme.colors.light.primary,
             }}
           />
           <div
@@ -230,7 +230,7 @@ export default function JourneyBuilder({ loading, onGenerate }: JourneyBuilderPr
                   padding: '0.3rem 0.75rem',
                   fontSize: '0.82rem',
                   cursor: 'pointer',
-                  backgroundColor: theme.colors.background.main,
+                  backgroundColor: theme.colors.light.primary,
                   color: theme.colors.text.secondary,
                 }}
               >
@@ -289,7 +289,7 @@ export default function JourneyBuilder({ loading, onGenerate }: JourneyBuilderPr
                   padding: '0.85rem',
                   borderRadius: theme.borderRadius.md,
                   border: `1px solid ${theme.colors.border.default}`,
-                  backgroundColor: theme.colors.background.main,
+                  backgroundColor: theme.colors.light.primary,
                 }}
               >
                 <div>

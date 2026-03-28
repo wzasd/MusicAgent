@@ -495,16 +495,26 @@ async def stream_webhook_response(
     try:
         # 分析意图（带上下文）
         history = context.get_history_text(limit=3)
+
+        # 记录意图识别开始时间
+        intent_start_time = time.time()
+
         intent_data = await analyze_intent_with_context(
             current_input=current_input,
             history=history,
             last_results=context.last_search_results
         )
 
+        # 计算意图识别时延
+        intent_end_time = time.time()
+        intent_latency_ms = round((intent_end_time - intent_start_time) * 1000, 2)
+
         intent_type = intent_data.get("intent_type", "search")
         parameters = intent_data.get("parameters", {})
         resolved_query = intent_data.get("resolved_query", current_input)
         action_type = intent_data.get("action_type", "play")
+
+        logger.info(f"意图识别完成: intent={intent_type}, action={action_type}, latency={intent_latency_ms}ms")
 
         # 处理取消/拒绝意图
         if intent_type == "cancel" or action_type == "cancel":
@@ -528,14 +538,18 @@ async def stream_webhook_response(
             yield f"data: {final_response.model_dump_json(ensure_ascii=False)}\n\n"
 
             # 记录日志
-            if log_entry:
-                log_entry.update({
-                    "result_count": 0,
-                    "elapsed_ms": round((time.time() - start_time) * 1000, 2),
-                    "status": "cancelled",
-                    "source": "user_cancel",
-                })
-                add_search_log(log_entry)
+            log_entry = {
+                "action": "webhook_search",
+                "original_query": current_input,
+                "intent": intent_type,
+                "parameters": parameters,
+                "intent_latency_ms": intent_latency_ms,
+                "result_count": 0,
+                "elapsed_ms": round((time.time() - start_time) * 1000, 2),
+                "status": "cancelled",
+                "source": "user_cancel",
+            }
+            add_search_log(log_entry)
             return
 
         # 针对 recommend_by_artist 意图，默认展示列表
@@ -548,6 +562,7 @@ async def stream_webhook_response(
             "original_query": current_input,
             "intent": intent_type,
             "parameters": parameters,
+            "intent_latency_ms": intent_latency_ms,
         }
 
         # 获取子 agent 服务
@@ -594,6 +609,7 @@ async def stream_webhook_response(
                             "original_query": current_input,
                             "intent": "select_from_results",
                             "parameters": parameters,
+                            "intent_latency_ms": intent_latency_ms,
                             "result_count": 1,
                             "elapsed_ms": round((time.time() - start_time) * 1000, 2),
                             "status": "success",
@@ -742,6 +758,7 @@ async def stream_webhook_response(
                     "original_query": current_input,
                     "intent": "select_from_results",
                     "parameters": parameters,
+                    "intent_latency_ms": intent_latency_ms,
                     "result_count": 1,
                     "elapsed_ms": round((time.time() - start_time) * 1000, 2),
                     "status": "success",
@@ -864,6 +881,7 @@ async def stream_webhook_response(
                             "original_query": current_input,
                             "intent": "select_from_results",
                             "parameters": parameters,
+                            "intent_latency_ms": intent_latency_ms,
                             "result_count": 1,
                             "elapsed_ms": round((time.time() - start_time) * 1000, 2),
                             "status": "success",

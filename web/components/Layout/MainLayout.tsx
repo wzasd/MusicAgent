@@ -29,7 +29,7 @@ export default function MainLayout({
     <div
       style={{
         minHeight: '100vh',
-        backgroundColor: theme.colors.background.main,
+        backgroundColor: theme.colors.light.primary,
       }}
     >
       {isMobile && isSidebarOpen && (

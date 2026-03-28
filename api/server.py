@@ -647,16 +647,27 @@ async def search_music(request: SearchRequest):
         llm = get_chat_model()
         intent_prompt = MUSIC_INTENT_ANALYZER_PROMPT.format(user_input=original_query)
 
+        # 记录意图识别开始时间
+        intent_start_time = __import__('time').time()
+
         try:
             response = await llm.ainvoke(intent_prompt)
             cleaned_json = _clean_json_from_llm(response.content)
             intent_data = json.loads(cleaned_json)
 
+            # 计算意图识别时延
+            intent_end_time = __import__('time').time()
+            intent_latency_ms = round((intent_end_time - intent_start_time) * 1000, 2)
+
             intent_type = intent_data.get("intent_type", "search")
             parameters = intent_data.get("parameters", {})
 
-            logger.info(f"搜索请求: 原始='{original_query}', 意图='{intent_type}', 参数={parameters}")
+            logger.info(f"搜索请求: 原始='{original_query}', 意图='{intent_type}', 参数={parameters}, 意图识别时延={intent_latency_ms}ms")
         except Exception as e:
+            # 计算失败的意图识别时延
+            intent_end_time = __import__('time').time()
+            intent_latency_ms = round((intent_end_time - intent_start_time) * 1000, 2)
+
             logger.warning(f"LLM意图分析失败: {e}, 使用默认搜索")
             intent_type = "search"
             parameters = {"query": original_query}
@@ -667,6 +678,7 @@ async def search_music(request: SearchRequest):
             "original_query": original_query,
             "intent": intent_type,
             "parameters": parameters,
+            "intent_latency_ms": intent_latency_ms,
         }
 
         # 根据意图类型执行不同搜索

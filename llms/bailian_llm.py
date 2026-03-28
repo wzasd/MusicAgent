@@ -145,6 +145,20 @@ class BailianLLM(BaseLLM):
         )
         return response["content"]
 
+    def get_model_info(self) -> Dict[str, Any]:
+        """
+        获取当前模型信息
+
+        Returns:
+            模型信息字典
+        """
+        return {
+            "provider": "bailian",
+            "model": self.default_model,
+            "api_type": "openai_compatible",
+            "base_url": self.client.base_url
+        }
+
 
 def get_chat_model() -> ChatOpenAI:
     """

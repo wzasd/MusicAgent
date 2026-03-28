@@ -28,7 +28,7 @@ export default function ResultsDisplay({ response, songs }: ResultsDisplayProps)
           style={{
             padding: '1.25rem',
             marginBottom: '1.5rem',
-            backgroundColor: theme.colors.background.card,
+            backgroundColor: "#fff",
             borderRadius: theme.borderRadius.md,
             border: `1px solid ${theme.colors.border.default}`,
             boxShadow: theme.shadows.sm,
