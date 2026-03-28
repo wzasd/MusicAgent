@@ -60,6 +60,12 @@ desktop.ini
 # 数据文件（如果包含敏感信息）
 data/*.json
 !data/music_database.json
+data/*.jsonl
+data/*.tar.xz
+data/*.tar.gz
+data/raw/
+data/chroma_db/
+data/corpus*
 
 # 测试覆盖率
 .coverage
